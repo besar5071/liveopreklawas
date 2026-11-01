@@ -941,7 +941,7 @@ with tab_live:
                 st.error(f"Gagal membuat metadata Live dengan Ollama Cloud: {exc}")
         if st.session_state.get("l_live_audio_transcript"):
             with st.container(border=True):
-                st.caption("Transkrip sampel audio (untuk verifikasi):")
+                st.caption("Hasil analisis audio Ollama (transkrip/ringkasan untuk verifikasi):")
                 st.write(st.session_state["l_live_audio_transcript"][:4000])
         st.text_input("Judul Live + hashtag", max_chars=100, key="l_live_broadcast_title")
         st.text_area("Deskripsi Live + hashtag", height=110, max_chars=5000,
