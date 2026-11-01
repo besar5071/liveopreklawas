@@ -886,6 +886,68 @@ with tab_live:
         "redirect_uri": str(live_oauth_cfg.get("redirect_uri") or "https://redirect1x.streamlit.app/"),
         "state_secret": str(live_oauth_cfg.get("state_secret") or live_oauth_cfg.get("client_secret") or ""),
     }
+    ollama_live_cfg = _secret_section("ollama")
+    ollama_live_model = str(ollama_live_cfg.get("model") or "gpt-oss:20b")
+    ollama_live_audio_default = str(ollama_live_cfg.get("audio_model") or "gemma4:e4b")
+    live_ollama_key_default = str(ollama_live_cfg.get("api_key") or st.session_state.get("vs_ollama_key") or "")
+    st.session_state.setdefault("l_live_ollama_key", live_ollama_key_default)
+    if not st.session_state["l_live_ollama_key"] and live_ollama_key_default:
+        st.session_state["l_live_ollama_key"] = live_ollama_key_default
+    st.session_state.setdefault("l_live_ollama_audio_model", ollama_live_audio_default)
+    st.session_state.setdefault("l_live_broadcast_title", "Live 24 Jam")
+    st.session_state.setdefault("l_live_broadcast_description", "")
+    with st.expander("✨ Buat judul + hashtag dan deskripsi otomatis (Ollama Cloud)"):
+        st.caption("Pilih satu audio yang digunakan pada live. Sampel 60 detik pertamanya akan ditranskripsikan oleh Ollama Cloud, lalu dipakai untuk membuat metadata yang relevan. Hasil tidak menjamin jumlah penonton atau viral.")
+        ollama_live_key = st.text_input("Ollama Cloud API key", type="password", key="l_live_ollama_key")
+        ollama_live_audio_model = st.text_input(
+            "Model audio Ollama Cloud", key="l_live_ollama_audio_model",
+            help="Default gemma4:e4b; model harus mendukung audio/transcription. Bisa diatur juga melalui [ollama] audio_model di Secrets.",
+        )
+        analysis_audio = st.selectbox(
+            "Audio sampel untuk analisis", a_rand, format_func=svc.label,
+            key="l_live_metadata_audio", placeholder="Pilih salah satu audio live...",
+            disabled=not a_rand,
+        ) if a_rand else None
+        live_metadata_context = st.text_input(
+            "Konteks tambahan (opsional)", key="l_live_metadata_context",
+            placeholder="Contoh: musik relaksasi, lagu rohani, suara alam",
+        )
+        if st.button("🎧 Analisis audio & buat judul + deskripsi", key="l_live_metadata_generate",
+                     disabled=not (ollama_live_key.strip() and analysis_audio), width="stretch"):
+            try:
+                with st.spinner("Mengirim sampel audio ke Ollama Cloud untuk transkripsi dan optimasi metadata..."):
+                    transcript = ollama_cloud.transcribe_live_audio(
+                        ollama_live_key, analysis_audio, model=ollama_live_audio_model.strip() or ollama_live_audio_default,
+                    )
+                    research_token = ""
+                    selected_research_accounts = st.session_state.get("l_live_oauth_account_ids", [])
+                    if selected_research_accounts:
+                        try:
+                            research_token, _ = _youtube_account_access_token(live_oauth_cfg, selected_research_accounts[0])
+                        except Exception:  # noqa: BLE001
+                            research_token = ""
+                    metadata = ollama_cloud.generate_live_metadata(
+                        ollama_live_key, transcript, audio_name=Path(analysis_audio).name,
+                        context=live_metadata_context, model=ollama_live_model,
+                        youtube_access_token=research_token,
+                    )
+                st.session_state["l_live_audio_transcript"] = transcript
+                st.session_state["l_live_broadcast_title"] = metadata["youtube_title"]
+                st.session_state["l_live_broadcast_description"] = metadata["youtube_description"]
+                st.success("Metadata dibuat dari sampel audio. Periksa dan edit sebelum menyiapkan broadcast.")
+                if not transcript:
+                    st.warning("Tidak terdeteksi ucapan atau lirik pada sampel. Ollama menggunakan nama file dan konteks tambahan; periksa agar metadata tetap akurat.")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Gagal membuat metadata Live dengan Ollama Cloud: {exc}")
+        if st.session_state.get("l_live_audio_transcript"):
+            with st.container(border=True):
+                st.caption("Transkrip sampel audio (untuk verifikasi):")
+                st.write(st.session_state["l_live_audio_transcript"][:4000])
+        st.text_input("Judul Live + hashtag", max_chars=100, key="l_live_broadcast_title")
+        st.text_area("Deskripsi Live + hashtag", height=110, max_chars=5000,
+                     key="l_live_broadcast_description")
+        st.caption("Jika channel OAuth dipilih, beberapa video populer terkait transkrip dapat dipakai sebagai inspirasi; judul tidak disalin dan hashtag bukan jaminan penonton.")
+
     live_oauth_accounts = _sync_youtube_accounts()
     with st.expander("🔐 Tambah / hubungkan channel YouTube Live via OAuth", expanded=not bool(live_oauth_accounts)):
         if not (live_oauth_cfg["client_id"] and live_oauth_cfg["client_secret"] and live_oauth_cfg["state_secret"]):
@@ -919,7 +981,8 @@ with tab_live:
                     list(live_account_map), format_func=lambda aid: live_account_map.get(aid, aid),
                     max_selections=5, key="l_live_oauth_account_ids",
                 )
-                live_broadcast_title = st.text_input("Judul broadcast YouTube Live (dipakai untuk semua channel terpilih)", value="Live 24 Jam", max_chars=100, key="l_live_broadcast_title")
+                live_broadcast_title = str(st.session_state.get("l_live_broadcast_title", "Live 24 Jam"))[:100]
+                live_broadcast_description = str(st.session_state.get("l_live_broadcast_description", ""))[:5000]
                 live_privacy_map = {"public": "🌍 Publik", "unlisted": "🔗 Tidak Publik", "private": "🔒 Pribadi"}
                 live_broadcast_privacy = st.selectbox("Visibilitas broadcast", list(live_privacy_map), format_func=live_privacy_map.get, key="l_live_broadcast_privacy")
                 if st.button("⚙️ Siapkan broadcast untuk channel terpilih", key="l_live_prepare_oauth", disabled=stream.running, width="stretch"):
@@ -933,11 +996,15 @@ with tab_live:
                             for account_id in live_account_ids[:5]:
                                 try:
                                     live_token, live_channel = _youtube_account_access_token(live_oauth_cfg, account_id)
-                                    live_session = ytauth.create_live_session(live_token, live_broadcast_title, live_broadcast_privacy)
+                                    live_session = ytauth.create_live_session(
+                                        live_token, live_broadcast_title, live_broadcast_privacy,
+                                        description=live_broadcast_description,
+                                    )
                                     channel_title = live_channel.get("title") or live_account_map.get(account_id, account_id)
                                     live_profile_name = f"OAuth · {channel_title} ({account_id[-5:]})"
                                     live_session_profiles[live_profile_name] = {
-                                        "title": live_session["title"], "rtmp_url": live_session["ingestion_address"],
+                                        "title": live_session["title"], "description": live_broadcast_description,
+                                        "rtmp_url": live_session["ingestion_address"],
                                         "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
                                         "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
                                         "privacy": live_session["privacy"], "channel_id": account_id,
@@ -949,10 +1016,17 @@ with tab_live:
                         st.session_state["l_live_last_prepared"] = prepared
                         st.session_state["l_live_prepare_errors"] = failures
                         st.rerun()
-                for prepared_item in st.session_state.get("l_live_last_prepared", []):
-                    st.success(f"Broadcast siap: {prepared_item.get('title')} · {prepared_item.get('privacy')} · {prepared_item.get('profile')}")
+                prepared_items = st.session_state.get("l_live_last_prepared", [])
+                if isinstance(prepared_items, dict):
+                    prepared_items = [prepared_items]
+                if not isinstance(prepared_items, (list, tuple)):
+                    prepared_items = []
+                for prepared_item in prepared_items:
+                    if not isinstance(prepared_item, dict):
+                        continue  # Ignore stale entries from older app/session-state versions.
+                    st.success(f"Broadcast siap: {prepared_item.get('title', 'Live')} · {prepared_item.get('privacy', '')} · {prepared_item.get('profile', '')}")
                     if prepared_item.get("watch_url"):
-                        st.link_button("🔗 Buka halaman siaran YouTube", prepared_item["watch_url"], key=f"l_live_watch_{prepared_item.get('broadcast_id')}")
+                        st.link_button("🔗 Buka halaman siaran YouTube", prepared_item["watch_url"], key=f"l_live_watch_{prepared_item.get('broadcast_id', 'live')}")
                 for failure in st.session_state.get("l_live_prepare_errors", []):
                     st.error(f"Broadcast tidak berhasil disiapkan: {failure}")
                 st.caption("Siapkan broadcast baru untuk tiap sesi baru. Live serentak memakai koneksi upload untuk semua channel yang dipilih.")
