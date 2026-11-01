@@ -1,4 +1,5 @@
 import hashlib
+import html
 import shutil
 import time
 from urllib.parse import quote
@@ -13,6 +14,8 @@ import streamlit as st
 import mediatools as mt
 import services as svc
 import uploader
+import ytauth
+import ollama_cloud
 
 st.set_page_config(page_title="Studio Render & Live", page_icon="📡", layout="wide")
 
@@ -111,8 +114,8 @@ with st.sidebar:
 
 st.title("Studio Render & Live")
 
-tab_lib, tab_imp, tab_norm, tab_live, tab_jobs = st.tabs(
-    ["📁 Library", "⬇️ Impor", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "⚙️ Job"])
+tab_lib, tab_imp, tab_shorts, tab_norm, tab_live, tab_jobs = st.tabs(
+    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "⚙️ Job"])
 
 # ───────────── LIBRARY ─────────────
 with tab_lib:
@@ -382,6 +385,241 @@ with tab_imp:
             tunnel_panel()
             if up_tunnel.url:
                 st.components.v1.iframe(f"{up_tunnel.url}/#t={up_srv.token}", height=520, scrolling=True)
+
+# ───────────── VIRAL SHORTS ─────────────
+def _secret_section(name: str) -> dict:
+    try:
+        value = st.secrets.get(name, {})
+        return dict(value) if value else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _sync_youtube_accounts() -> list[dict]:
+    try:
+        return ytauth.saved_accounts()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _youtube_account_access_token(cfg: dict, account_id: str | None = None) -> tuple[str, dict]:
+    return ytauth.account_access_token(cfg, account_id)
+
+
+with tab_shorts:
+    st.caption("Susun kartu kata 9:16 dengan latar Clipdrop, siapkan metadata dengan Ollama Cloud, lalu render dan unggah ke YouTube Shorts. API key dan OAuth client secret diambil dari **Settings → Secrets** atau kolom sesi di bawah; rahasia OAuth tidak ditampilkan.")
+    ollama_shorts_cfg = _secret_section("ollama")
+    clipdrop_cfg = _secret_section("clipdrop")
+    oauth_shorts_cfg = _secret_section("youtube_oauth")
+    shorts_ollama_model = str(ollama_shorts_cfg.get("model") or "gpt-oss:20b")
+    shorts_cd_key = st.session_state.get("vs_clipdrop_key", str(clipdrop_cfg.get("api_key") or ""))
+    shorts_ollama_key = st.session_state.get("vs_ollama_key", str(ollama_shorts_cfg.get("api_key") or ""))
+    with st.expander("🔑 API Clipdrop & Ollama Cloud", expanded=not bool(shorts_cd_key or shorts_ollama_key)):
+        shorts_cd_key = st.text_input("Clipdrop API key", value=shorts_cd_key, type="password", key="vs_clipdrop_key")
+        shorts_ollama_key = st.text_input("Ollama Cloud API key", value=shorts_ollama_key, type="password", key="vs_ollama_key")
+        st.caption("Untuk menghindari input ulang, simpan key di Streamlit Secrets sebagai `[clipdrop] api_key` dan `[ollama] api_key`.")
+
+    # OAuth credentials themselves are read only from secrets/environment, never from a user-visible field.
+    oauth_shorts_cfg = {
+        "client_id": str(oauth_shorts_cfg.get("client_id") or ""),
+        "client_secret": str(oauth_shorts_cfg.get("client_secret") or ""),
+        "redirect_uri": str(oauth_shorts_cfg.get("redirect_uri") or "https://redirect1x.streamlit.app/"),
+        "state_secret": str(oauth_shorts_cfg.get("state_secret") or oauth_shorts_cfg.get("client_secret") or ""),
+    }
+    shorts_yt_accounts = _sync_youtube_accounts()
+    selected_shorts_acct_id = None
+    selected_shorts_channel_title = "YouTube"
+    vs_upload_privacy = "public"
+    vs_auto_upload_after_render = False
+    with st.expander("📤 Channel tujuan & visibilitas upload", expanded=bool(shorts_yt_accounts)):
+        if shorts_yt_accounts:
+            acct_map = {a["id"]: f"📺 {a.get('channel', {}).get('title', 'Channel YouTube')}" for a in shorts_yt_accounts}
+            up_c1, up_c2, up_c3 = st.columns([1.7, 1, 1.4])
+            selected_shorts_acct_id = up_c1.selectbox("Channel YouTube", list(acct_map), format_func=lambda aid: acct_map.get(aid, aid), key="vs_yt_account_id")
+            chosen_account = next((a for a in shorts_yt_accounts if a["id"] == selected_shorts_acct_id), {})
+            selected_shorts_channel_title = (chosen_account.get("channel") or {}).get("title") or "YouTube"
+            privacy_opts = {"public": "🌍 Publik", "unlisted": "🔗 Tidak Publik", "private": "🔒 Pribadi"}
+            vs_upload_privacy = up_c2.selectbox("Visibilitas", list(privacy_opts), format_func=privacy_opts.get, key="vs_upload_privacy")
+            vs_auto_upload_after_render = up_c3.checkbox("🚀 Upload otomatis setelah render", key="vs_auto_upload_yt", help="Video diunggah setelah file MP4 berhasil dibuat.")
+        else:
+            st.info("Belum ada channel YouTube terhubung. Tambahkan OAuth client di Secrets untuk mengaktifkan upload.")
+        if oauth_shorts_cfg["client_id"] and oauth_shorts_cfg["client_secret"] and oauth_shorts_cfg["state_secret"]:
+            with st.expander("🔐 Hubungkan / tambah channel YouTube", expanded=not bool(shorts_yt_accounts)):
+                state_secret = oauth_shorts_cfg["state_secret"]
+                s_state = st.session_state.get("yt_oauth_state")
+                if not s_state or not ytauth.verify_state(s_state, state_secret):
+                    s_state = ytauth.make_state(state_secret)
+                    st.session_state["yt_oauth_state"] = s_state
+                s_auth_url = ytauth.authorization_url(oauth_shorts_cfg["client_id"], oauth_shorts_cfg["redirect_uri"], s_state)
+                st.link_button("🔐 Login & otorisasi YouTube", s_auth_url, type="primary")
+                st.caption("Setelah memberi izin Google, salin URL redirect lengkap dan tempel di bawah. Redirect URI harus sama dengan yang didaftarkan di Google Cloud Console.")
+                oc1, oc2 = st.columns([2.5, 1])
+                vs_redir_url = oc1.text_input("URL redirect OAuth", type="password", key="vs_yt_redirect_url", placeholder="https://redirect1x.streamlit.app/?state=...&code=...")
+                if oc2.button("🔄 Simpan channel", key="vs_yt_oauth_exchange", width="stretch"):
+                    try:
+                        code = ytauth.parse_redirect_url(vs_redir_url, st.session_state.get("yt_oauth_state", ""), state_secret)
+                        token = ytauth.exchange_code(oauth_shorts_cfg["client_id"], oauth_shorts_cfg["client_secret"], oauth_shorts_cfg["redirect_uri"], code)
+                        channel = ytauth.get_my_channel(token["access_token"])
+                        ytauth.upsert_saved_account(token, channel)
+                        st.session_state.pop("yt_oauth_state", None)
+                        st.success(f"Channel siap digunakan: {channel['title']}")
+                        st.rerun()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Gagal menghubungkan channel: {exc}")
+        elif not shorts_yt_accounts:
+            st.caption("Tambahkan `[youtube_oauth] client_id`, `client_secret`, dan `redirect_uri` di Streamlit Secrets.")
+
+    for key, default in {
+        "vs_header": "Sehat Selalu Istriku ❤️",
+        "vs_body": "Semoga selalu sehat, kuat, dan bahagia.\n\nTerima kasih sudah menjadi pendamping hidupku.\n\nMari bersama sampai tua nanti.",
+        "vs_clipdrop_prompt": "cinematic warm sunset, peaceful Indonesian home, soft golden light, elegant floral details, vertical composition, no text, no letters",
+        "vs_yt_title": "Sehat Selalu Istriku ❤️ Pesan Menyentuh Hati #Shorts",
+        "vs_yt_desc": "Pesan tulus dan doa untuk orang tersayang.\n\n#Shorts #KataKataMenyentuhHati #QuotesIndonesia",
+        "vs_yt_tags": "shorts, pesan menyentuh hati, quotes indonesia, kata kata bijak",
+    }.items():
+        st.session_state.setdefault(key, default)
+    pending_draft = st.session_state.pop("_vs_pending_draft", None)
+    if isinstance(pending_draft, dict):
+        for src, dst in (("header", "vs_header"), ("body", "vs_body"), ("clipdrop_prompt", "vs_clipdrop_prompt"),
+                         ("youtube_title", "vs_yt_title"), ("youtube_description", "vs_yt_desc")):
+            if pending_draft.get(src):
+                st.session_state[dst] = pending_draft[src]
+        if pending_draft.get("youtube_tags"):
+            tags = pending_draft["youtube_tags"]
+            st.session_state["vs_yt_tags"] = ", ".join(tags) if isinstance(tags, list) else str(tags)
+        st.session_state["vs_last_research"] = pending_draft
+
+    topic_map = {"relationship": "❤️ Cinta & rumah tangga", "motivation": "✨ Motivasi", "family": "👨‍👩‍👧 Keluarga", "wisdom": "🌱 Kata bijak", "custom": "✍️ Topik kustom"}
+    topic_key = st.selectbox("🎯 Tema Shorts", list(topic_map), format_func=topic_map.get, key="vs_topic")
+    custom_topic = st.text_input("Fokus / kata kunci tambahan", key="vs_custom_topic", placeholder="Contoh: doa untuk istri yang sedang sakit", disabled=topic_key != "custom")
+    watermark = st.text_input("Watermark / nama akun (opsional)", key="vs_watermark", placeholder="@namaakun")
+    if topic_key == "custom" and not custom_topic.strip():
+        st.info("Isi fokus spesifik agar Ollama dapat menyusun naskah sesuai topik.")
+
+    ed_col, prev_col = st.columns([1.45, 1])
+    with ed_col:
+        draft_header = st.text_input("Judul pita / headline kartu", max_chars=100, key="vs_header")
+        draft_body = st.text_area("Isi bait (pisahkan paragraf dengan satu baris kosong)", height=220, key="vs_body")
+        draft_cd_prompt = st.text_area("Prompt gambar latar Clipdrop (bahasa Inggris, tanpa teks)", height=90, key="vs_clipdrop_prompt")
+        draft_yt_title = st.text_input("Judul YouTube Shorts (maks. 100 karakter)", max_chars=100, key="vs_yt_title")
+        draft_yt_desc = st.text_area("Deskripsi, ajakan komentar & hashtag", height=100, key="vs_yt_desc")
+        draft_yt_tags = st.text_input("Tags (pisahkan dengan koma)", key="vs_yt_tags")
+        audio_choices = [""] + [str(p) for p in svc.list_paths("audio")]
+        audio_choice = st.selectbox("Audio latar (opsional)", audio_choices, format_func=lambda p: "Tanpa audio" if not p else Path(p).name, key="vs_audio_choice")
+        audio_volume = st.slider("Volume audio (%)", 0, 200, 100, key="vs_audio_vol")
+        out_name = st.text_input("Nama file (opsional)", key="vs_output_name", placeholder="Otomatis dari judul")
+        auto_upload = vs_auto_upload_after_render
+        can_upload = bool(shorts_yt_accounts and oauth_shorts_cfg["client_secret"])
+        if auto_upload and not can_upload:
+            st.warning("Hubungkan channel YouTube dahulu atau nonaktifkan upload otomatis.")
+        b1, b2 = st.columns(2)
+        if b1.button("🔍 Buat draf tren + metadata (Ollama)", key="vs_btn_research_draft", width="stretch"):
+            if not shorts_ollama_key:
+                st.error("Tambahkan API key Ollama Cloud di Secrets atau kolom di atas.")
+            elif topic_key == "custom" and not custom_topic.strip():
+                st.error("Isi fokus topik kustom terlebih dahulu.")
+            else:
+                try:
+                    opt_tok = _youtube_account_access_token(oauth_shorts_cfg, selected_shorts_acct_id)[0] if shorts_yt_accounts else ""
+                    with st.spinner("Ollama sedang menyusun naskah dan metadata..."):
+                        result = ollama_cloud.generate_viral_short_script(shorts_ollama_key, topic_key=topic_key, custom_topic=custom_topic.strip(), watermark=watermark.strip(), model=shorts_ollama_model, youtube_access_token=opt_tok)
+                    st.session_state["_vs_pending_draft"] = result
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal membuat draf: {exc}")
+        if b2.button("✨ Optimalkan metadata (Ollama)", key="vs_btn_regen_draft_seo", width="stretch"):
+            if not shorts_ollama_key:
+                st.error("Tambahkan API key Ollama Cloud terlebih dahulu.")
+            elif not draft_header.strip() and not draft_body.strip():
+                st.error("Isi headline atau bait terlebih dahulu.")
+            else:
+                try:
+                    opt_tok = _youtube_account_access_token(oauth_shorts_cfg, selected_shorts_acct_id)[0] if shorts_yt_accounts else ""
+                    with st.spinner("Ollama meracik judul, deskripsi, hashtag, dan tags..."):
+                        result = ollama_cloud.generate_viral_short_upload_metadata(shorts_ollama_key, header=draft_header, body=draft_body, topic_key=topic_key, custom_topic=custom_topic.strip(), watermark=watermark.strip(), model=shorts_ollama_model, youtube_access_token=opt_tok)
+                    st.session_state["_vs_pending_draft"] = result
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal membuat metadata: {exc}")
+        render_label = "🎬 Render + upload Shorts" if auto_upload else "🎬 Render video Shorts 9:16"
+        if st.button(render_label, key="vs_btn_render_draft", type="primary", width="stretch", disabled=auto_upload and not can_upload):
+            if not shorts_cd_key:
+                st.error("Tambahkan Clipdrop API key terlebih dahulu.")
+            elif not draft_header.strip() or not draft_body.strip():
+                st.error("Headline dan isi kartu wajib diisi.")
+            elif not draft_cd_prompt.strip():
+                st.error("Prompt latar Clipdrop wajib diisi.")
+            else:
+                try:
+                    yt_tok, yt_ch_title = _youtube_account_access_token(oauth_shorts_cfg, selected_shorts_acct_id) if auto_upload else ("", "YouTube")
+                    last_res = st.session_state.get("vs_last_research") or {}
+                    job = svc.submit_viral_short_video(jobs, clipdrop_api_key=shorts_cd_key.strip(), header=draft_header.strip(), body=draft_body.strip(), clipdrop_prompt=draft_cd_prompt.strip(), youtube_title=draft_yt_title.strip(), youtube_description=draft_yt_desc, youtube_tags=draft_yt_tags, output_name=out_name.strip(), youtube_access_token=yt_tok, youtube_references=last_res.get("youtube_references"), trending_keywords=last_res.get("trending_keywords"), topic_key=topic_key, custom_topic=custom_topic.strip(), watermark=watermark.strip(), audio_path=audio_choice or None, audio_volume=audio_volume, disk_min_gb=float(disk_min), auto_upload_youtube=bool(auto_upload), upload_privacy=vs_upload_privacy, upload_channel_title=yt_ch_title)
+                    st.success(f"Render Shorts diantrekan · Job `{job['id']}`")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal mengantrekan render: {exc}")
+    with prev_col:
+        st.markdown("#### 🪄 Pratinjau kartu 9:16")
+        st.markdown(f"<div style='aspect-ratio:9/16;max-width:320px;margin:auto;padding:28px;display:flex;flex-direction:column;justify-content:center;border-radius:24px;color:white;text-align:center;background:linear-gradient(145deg,#19233e,#b8615e 55%,#1b1028);box-shadow:0 12px 40px #0005'><div style='font-size:25px;font-weight:800'>{html.escape(draft_header or 'Headline Shorts')}</div><div style='white-space:pre-wrap;font-size:16px;margin-top:22px'>{html.escape(draft_body or 'Isi kata-kata tampil di sini')}</div><small style='margin-top:26px'>{html.escape(watermark)}</small></div>", unsafe_allow_html=True)
+        st.caption("Pratinjau ini hanya simulasi tata letak; video akhir memakai latar gambar Clipdrop.")
+        st.markdown("#### ⚙️ Job Shorts")
+
+        @st.fragment(run_every=3)
+        def viral_shorts_job_panel():
+            short_rows = [r for r in jobs.snapshot() if str(r.get("Job", "")).startswith(("Viral Shorts", "Upload Shorts → YouTube:"))]
+            jobs_table(short_rows[:8], key="viral_shorts_jobs")
+
+        viral_shorts_job_panel()
+
+    st.divider()
+    st.markdown("#### 🚀 Upload video Shorts yang sudah ada")
+    recent_shorts = svc.list_recent_shorts()
+    shorts_map = {str(Path(r["video_path"]).resolve()): r for r in recent_shorts if r.get("video_path")}
+    available = list(dict.fromkeys([*shorts_map.keys(), *[str(p.resolve()) for p in svc.library_videos()]]))
+    if not available:
+        st.caption("Belum ada video. Render video lewat editor di atas atau impor video 9:16 ke Library.")
+    else:
+        def _short_label(path: str) -> str:
+            rec = shorts_map.get(str(Path(path).resolve()), {})
+            prefix = "✅ Sudah di-upload" if rec.get("shorts_url") else "📌 Siap upload"
+            return f"{prefix} · {Path(path).name} — {(rec.get('youtube_title') or rec.get('header') or '')[:48]}"
+        picked_vpath_str = st.selectbox("Pilih video", available, format_func=_short_label, key="vs_pick_upload_video")
+        picked_vpath = Path(picked_vpath_str)
+        picked_rec = shorts_map.get(str(picked_vpath.resolve()), {})
+        if st.session_state.get("_vs_last_loaded_vid") != picked_vpath_str:
+            st.session_state["vs_up_title"] = picked_rec.get("youtube_title") or f"{picked_vpath.stem.replace('_', ' ')} #Shorts"[:100]
+            st.session_state["vs_up_desc"] = picked_rec.get("youtube_description") or "Pesan penuh makna. Bagikan ke orang tersayangmu.\n\n#Shorts #QuotesIndonesia"
+            st.session_state["vs_up_tags"] = ", ".join(picked_rec.get("youtube_tags") or ["shorts", "quotes indonesia", "kata kata menyentuh hati"])
+            st.session_state["_vs_last_loaded_vid"] = picked_vpath_str
+        upc1, upc2 = st.columns([1, 1.5])
+        with upc1:
+            if picked_vpath.is_file():
+                st.video(str(picked_vpath))
+                if picked_vpath.stat().st_size <= 80 * 1024 * 1024:
+                    st.download_button("⬇️ Download MP4", picked_vpath.read_bytes(), file_name=picked_vpath.name, mime="video/mp4", key="vs_download_mp4")
+        with upc2:
+            if picked_rec.get("shorts_url"):
+                st.success(f"✅ Terupload ke {picked_rec.get('uploaded_channel', 'YouTube')} · {picked_rec.get('uploaded_privacy', 'public')} · {picked_rec.get('uploaded_at', '')}")
+                st.link_button("▶️ Buka YouTube Shorts", picked_rec["shorts_url"], type="primary")
+            up_title_val = st.text_input("Judul YouTube Shorts", max_chars=100, key="vs_up_title")
+            up_desc_val = st.text_area("Deskripsi & hashtag", height=110, key="vs_up_desc")
+            up_tags_val = st.text_input("Tags / keywords", key="vs_up_tags")
+            if st.button("🚀 Upload ke YouTube Shorts", key="vs_btn_upload_short_now", type="primary", disabled=not shorts_yt_accounts, width="stretch"):
+                if not up_title_val.strip():
+                    st.error("Judul YouTube Shorts tidak boleh kosong.")
+                else:
+                    try:
+                        yt_tok, yt_channel = _youtube_account_access_token(oauth_shorts_cfg, selected_shorts_acct_id)
+                        job = svc.submit_upload_short_to_youtube(jobs, video_path=picked_vpath, youtube_access_token=yt_tok, channel_title=yt_channel.get("title", selected_shorts_channel_title), privacy=vs_upload_privacy, title=up_title_val, description=up_desc_val, tags=up_tags_val, auto_ollama_metadata=False)
+                        st.success(f"Upload diantrekan · Job `{job['id']}`")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Gagal mengantrekan upload: {exc}")
+            if st.button("⚡ Ollama + langsung upload", key="vs_btn_ollama_and_upload", disabled=not (shorts_yt_accounts and shorts_ollama_key), width="stretch"):
+                try:
+                    yt_tok, yt_channel = _youtube_account_access_token(oauth_shorts_cfg, selected_shorts_acct_id)
+                    job = svc.submit_upload_short_to_youtube(jobs, video_path=picked_vpath, youtube_access_token=yt_tok, channel_title=yt_channel.get("title", selected_shorts_channel_title), privacy=vs_upload_privacy, title=up_title_val, description=up_desc_val, tags=up_tags_val, auto_ollama_metadata=True, ollama_api_key=shorts_ollama_key, ollama_model=shorts_ollama_model, header=picked_rec.get("header") or picked_vpath.stem, body=picked_rec.get("body") or picked_vpath.stem, topic_key=picked_rec.get("topic_key") or topic_key, custom_topic=custom_topic.strip(), watermark=picked_rec.get("watermark") or watermark.strip())
+                    st.success(f"Ollama + upload diantrekan · Job `{job['id']}`")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal mengantrekan Ollama + upload: {exc}")
 
 # ───────────── NORMALISASI & TES ─────────────
 LMODE = {"two": "Presisi (2-pass, disarankan)", "one": "Cepat (1-pass)",

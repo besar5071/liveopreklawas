@@ -1,0 +1,6 @@
+# Runtime media and private OAuth data
+/data/
+__pycache__/
+*.py[cod]
+.streamlit/secrets.toml
+.venv/
