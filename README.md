@@ -23,11 +23,13 @@ redirect_uri = "https://redirect1x.streamlit.app/"
 state_secret = "RANDOM_LONG_PRIVATE_VALUE"
 ```
 
-Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yang sesuai dengan redirect URI di atas, dan izinkan scope upload YouTube. Setelah otorisasi, tempel URL redirect lengkap pada panel Shorts. Refresh token tersimpan di `data/youtube_accounts.json` dengan izin file terbatas; file runtime di dalam `data/` diabaikan Git. Pada Streamlit Cloud, filesystem bersifat sementara, sehingga koneksi channel dapat hilang saat instance diganti.
+Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yang sesuai dengan redirect URI di atas, dan izinkan akses YouTube. Setelah otorisasi, tempel URL redirect lengkap pada panel Shorts atau Live. Refresh token tersimpan di `data/youtube_accounts.json` dengan izin file terbatas; file runtime di dalam `data/` diabaikan Git. Pada Streamlit Cloud, filesystem bersifat sementara, sehingga koneksi channel dapat hilang saat instance diganti. Akses YouTube Live mencakup pembuatan broadcast dan stream, jadi channel yang pernah dihubungkan untuk Shorts perlu menyetujui scope Live yang lebih luas dengan login OAuth ulang.
 
 ## Tujuan Live tersimpan
 
-Tab **🔴 Live 24 Jam** dapat menampilkan daftar channel RTMP tersimpan. Tambahkan bagian ini di Streamlit Secrets, lalu masukkan masing-masing URL dan stream key dari YouTube Live Control Room:
+Di tab **🔴 Live 24 Jam**, buka **Tambah / hubungkan channel YouTube Live via OAuth**. Klik otorisasi, tempel URL redirect Google, pilih channel yang sudah terhubung, atur judul/visibilitas, lalu klik **Siapkan broadcast & stream key otomatis**. Aplikasi membuat broadcast dan stream YouTube, kemudian memilih tujuan RTMP otomatis. Channel harus sudah memenuhi syarat YouTube Live. Otorisasi Shorts lama perlu diulang agar memberikan izin YouTube Live.
+
+Sebagai alternatif, tab ini juga dapat menampilkan daftar channel RTMP tersimpan dari Secrets. Tambahkan bagian ini di Streamlit Secrets, lalu masukkan masing-masing URL dan stream key dari YouTube Live Control Room:
 
 ```toml
 [live_channels]
