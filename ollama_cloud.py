@@ -46,14 +46,27 @@ def _chat(api_key: str, model: str, system: str, prompt: str) -> str:
 
 
 def _json_from_text(text: str) -> dict:
-    text = re.sub(r"^\s*```(?:json)?|```\s*$", "", text.strip(), flags=re.I)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise OllamaCloudError("Respons Ollama tidak berisi JSON yang valid.")
+    if not isinstance(text, str) or not text.strip():
+        raise OllamaCloudError("Ollama mengembalikan jawaban kosong, bukan JSON.")
+    cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I)
+    decoder = json.JSONDecoder()
     try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError as exc:
-        raise OllamaCloudError("Respons JSON Ollama tidak bisa dibaca.") from exc
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Accept a JSON object surrounded by prose or Markdown, without mistaking braces in prose.
+    for index, char in enumerate(cleaned):
+        if char != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(cleaned[index:])
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    raise OllamaCloudError("Respons Ollama tidak berisi objek JSON yang valid.")
 
 
 def _web_research(api_key: str, topic: str) -> dict:
@@ -102,7 +115,8 @@ def _chat_live_metadata(api_key: str, model: str, topic: str, audio_analysis: di
               "Gunakan bukti PCM/spektrogram dan hasil riset yang diberikan; fitur spektral dan tempo hanya heuristik, "
               "bukan identifikasi lagu, artis, lirik, atau genre yang pasti. Jangan mengarang identitas, view count, "
               "tren, atau klaim yang tidak ada dalam riset. Judul <=90 karakter sebelum hashtag; description <=4200 karakter. "
-              "Sertakan 1-2 hashtag relevan di judul serta 3-6 hashtag relevan di description. Hashtag bukan jaminan viral.")
+              "Sertakan 1-2 hashtag relevan di judul serta 3-6 hashtag relevan di description. Hashtag bukan jaminan viral. "
+              "Keluarkan satu objek JSON saja dengan keys: title, description, hashtags, tags, category_id, reason; tanpa Markdown atau teks lain.")
     user_message = {"role": "user", "content": json.dumps(evidence, ensure_ascii=False)}
     image_data = []
     for path in spectrogram_paths[:3]:
@@ -112,21 +126,50 @@ def _chat_live_metadata(api_key: str, model: str, topic: str, audio_analysis: di
             continue
     if image_data:
         user_message["images"] = image_data
-    payload = {"model": model or "gemma4:31b", "stream": False, "format": LIVE_METADATA_SCHEMA,
-               "options": {"temperature": 0.55, "num_predict": 1600},
+    payload = {"model": model or "gemma4:31b", "stream": False, "think": False,
+               "format": LIVE_METADATA_SCHEMA,
+               "options": {"temperature": 0.25, "num_predict": 1200},
                "messages": [{"role": "system", "content": system}, user_message]}
-    try:
-        response = requests.post("https://ollama.com/api/chat", json=payload,
-                                 headers={"Authorization": f"Bearer {api_key.strip()}",
-                                          "Content-Type": "application/json"}, timeout=(20, 180))
-        if not response.ok:
-            raise OllamaCloudError(f"Ollama Cloud metadata gagal ({response.status_code}): {response.text[:500]}. "
-                                   "Pastikan [ollama] live_model mendukung gambar/vision.")
-        result = response.json()
+
+    def request_content(request_payload: dict) -> str:
+        try:
+            response = requests.post("https://ollama.com/api/chat", json=request_payload,
+                                     headers={"Authorization": f"Bearer {api_key.strip()}",
+                                              "Content-Type": "application/json"}, timeout=(20, 180))
+            if not response.ok:
+                raise OllamaCloudError(f"Ollama Cloud metadata gagal ({response.status_code}): {response.text[:500]}. "
+                                       "Pastikan [ollama] live_model mendukung gambar/vision dan JSON terstruktur.")
+            result = response.json()
+        except requests.RequestException as exc:
+            raise OllamaCloudError(f"Tidak dapat menghubungi Ollama Cloud untuk metadata: {exc}") from exc
         message = result.get("message", {}) if isinstance(result, dict) else {}
-        return _json_from_text(str(message.get("content", "") if isinstance(message, dict) else ""))
-    except requests.RequestException as exc:
-        raise OllamaCloudError(f"Tidak dapat menghubungi Ollama Cloud untuk metadata: {exc}") from exc
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        if isinstance(content, list):
+            content = "".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content)
+        return str(content or result.get("response", "") if isinstance(result, dict) else content).strip()
+
+    first_content = request_content(payload)
+    try:
+        return _json_from_text(first_content)
+    except OllamaCloudError:
+        # Some cloud model responses ignore schema mode or return a preamble. Retry once
+        # with simpler JSON mode and a concise repair instruction; keep the audio evidence/images.
+        retry_payload = dict(payload)
+        retry_payload["format"] = "json"
+        retry_payload["messages"] = [
+            {"role": "system", "content": "Return exactly one valid JSON object. No Markdown, no explanation. "
+             "Required keys: title, description, hashtags (array), tags (array), category_id, reason."},
+            {**user_message, "content": json.dumps({"instruction": "Create accurate YouTube Live metadata from these audio features, spectrogram evidence and research. Include relevant hashtags in title and description. Do not invent song or artist names.", "evidence": evidence}, ensure_ascii=False)},
+        ]
+        retry_payload["options"] = {"temperature": 0.1, "num_predict": 1200}
+        retry_content = request_content(retry_payload)
+        try:
+            return _json_from_text(retry_content)
+        except OllamaCloudError as exc:
+            raise OllamaCloudError(
+                "Ollama Cloud tidak menghasilkan JSON metadata yang bisa dibaca setelah dua percobaan. "
+                "Pastikan model Live vision sesuai dan kuota tersedia, lalu coba lagi."
+            ) from exc
 
 
 def _normalize_live_metadata(data: dict) -> dict:
