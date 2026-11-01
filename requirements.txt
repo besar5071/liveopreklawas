@@ -1,0 +1,7 @@
+streamlit>=1.50
+pandas
+gdown
+yt-dlp[default]
+deno
+requests
+numpy
