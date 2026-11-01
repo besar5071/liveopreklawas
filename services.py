@@ -1019,6 +1019,7 @@ class StreamManager:
         self.running = False
         self.finished = False
         self.stream_key = ""
+        self.stream_keys: list[str] = []
         self.video: Path | None = None
         self.files: list[Path] = []
         self.max_seconds = 0
@@ -1061,6 +1062,9 @@ class StreamManager:
     def start(self, cfg: dict, max_hours: float):
         if self.running:
             return
+        outputs = cfg.get("outputs") or []
+        if outputs and not 1 <= len(outputs) <= 5:
+            raise ValueError("Live dapat menyiarkan ke 1 sampai 5 tujuan sekaligus.")
         self.stop_event.clear()
         self.restarts, self.finished, self.notes, self.progress = 0, False, [], {}
         self.switches, self.now_video, self.now_audio, self.prep_info = 0, "", "", ""
@@ -1070,14 +1074,20 @@ class StreamManager:
         self._prep_queued = set()
         self._prep_q = queue.Queue()
         self.started_at = time.time()
-        self.stream_key = cfg["stream_key"]
+        outputs = cfg.get("outputs") or []
+        self.stream_keys = [str(item.get("stream_key", "")) for item in outputs if isinstance(item, dict) and item.get("stream_key")]
+        legacy_key = str(cfg.get("stream_key") or (self.stream_keys[0] if self.stream_keys else ""))
+        self.stream_key = legacy_key
+        if legacy_key and legacy_key not in self.stream_keys:
+            self.stream_keys.append(legacy_key)
         self.files = [Path(p) for p in (*cfg["videos"], *cfg["audios"])]
         self._adur = {}
         self.video = self.files[0] if self.files else None
         self.max_seconds = int(max_hours * 3600)
         for _k, _ck, _d in (("l", "vol_loop", 0.6), ("r", "vol_rand", 1.0)):
             self.set_volume(_k, cfg.get(_ck, _d))
-        self.running, self.state, self.detail = True, "menyiapkan", "Memeriksa file audio dan video..."
+        target_count = len(outputs) or 1
+        self.running, self.state, self.detail = True, "menyiapkan", f"Memeriksa file audio/video · tujuan live: {target_count}"
         LOG_FILE.write_bytes(b"")
         threading.Thread(target=self._run, args=(cfg,), daemon=True).start()
 
@@ -1509,8 +1519,24 @@ class StreamManager:
 
     # ---------- sink ----------
     def build_cmd(self, cfg: dict, vfd: int, lfd: int, rfd: int) -> list[str]:
-        """Mux video with LOOP + RANDOM PCM into one limited AAC audio stream."""
-        out = cfg.get("_output") or (cfg["rtmp_url"].rstrip("/") + "/" + cfg["stream_key"])
+        """Mux the composed stream once and fan it out to up to five RTMP targets."""
+        configured = cfg.get("outputs") or []
+        if configured:
+            if len(configured) > 5:
+                raise ValueError("Maksimal lima tujuan Live sekaligus.")
+            destinations = []
+            for item in configured:
+                if isinstance(item, dict):
+                    url = str(item.get("url") or "")
+                    if not url and item.get("rtmp_url") and item.get("stream_key"):
+                        url = str(item["rtmp_url"]).rstrip("/") + "/" + str(item["stream_key"])
+                else:
+                    url = str(item)
+                if not url:
+                    raise ValueError("Setiap tujuan Live harus memiliki URL RTMP yang valid.")
+                destinations.append(url)
+        else:
+            destinations = [cfg.get("_output") or (cfg["rtmp_url"].rstrip("/") + "/" + cfg["stream_key"])]
 
         def vol(key, default):
             return max(0.0, min(2.0, float(cfg.get(key, default))))
@@ -1530,16 +1556,31 @@ class StreamManager:
                "-probesize", "2M", "-analyzeduration", "2M", "-thread_queue_size", "1024",
                "-fflags", "+genpts", "-re", "-f", "mpegts", "-i", f"pipe:{vfd}",
                *pcm, "-i", f"pipe:{lfd}",
-               *pcm, "-i", f"pipe:{rfd}"]
-        cmd += ["-filter_complex", fc,
-                "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "160k", "-ar", str(PCM_RATE), "-ac", "2",
-                "-max_muxing_queue_size", "4096", "-flush_packets", "1",
-                "-flvflags", "no_duration_filesize"]
-        if out.lower().startswith(("rtmp://", "rtmps://")):
-            # koneksi mati diam-diam terdeteksi ±20 dtk -> sesi cepat dibangun ulang
-            cmd += ["-rtmp_live", "live", "-rw_timeout", "20000000"]
-        cmd += ["-f", "flv", out]
+               *pcm, "-i", f"pipe:{rfd}", "-filter_complex", fc,
+               "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy",
+               "-c:a", "aac", "-b:a", "160k", "-ar", str(PCM_RATE), "-ac", "2",
+               "-max_muxing_queue_size", "4096", "-flush_packets", "1"]
+        if len(destinations) == 1:
+            out = destinations[0]
+            if out.lower().startswith(("rtmp://", "rtmps://")):
+                # koneksi mati diam-diam terdeteksi ±20 dtk -> sesi cepat dibangun ulang
+                cmd += ["-rtmp_live", "live", "-rw_timeout", "20000000"]
+            cmd += ["-flvflags", "no_duration_filesize", "-f", "flv", out]
+            return cmd
+
+        # One FFmpeg process encodes once and fans out via the tee muxer. A broken
+        # destination is ignored rather than taking down the other live channels.
+        def tee_escape(value: str) -> str:
+            return value.replace("\\", "\\\\").replace("|", "\\|").replace("'", "\\'")
+
+        tee_targets = "|".join(
+            "[f=flv:onfail=ignore:flvflags=no_duration_filesize:rw_timeout=20000000:rtmp_live=live]"
+            + tee_escape(url)
+            for url in destinations
+        )
+        cmd += ["-use_fifo", "1", "-fifo_options",
+                "queue_size=120:drop_pkts_on_overflow=1:attempt_recovery=1:recovery_wait_time=1",
+                "-f", "tee", tee_targets]
         return cmd
 
     def _downshift(self, why: str):
@@ -1776,7 +1817,10 @@ class StreamManager:
             f.seek(0, 2)
             f.seek(max(0, f.tell() - n))
             text = f.read().decode("utf-8", errors="replace")
-        return text.replace(self.stream_key, "********") if self.stream_key else text
+        for key in sorted(set(self.stream_keys), key=len, reverse=True):
+            if key:
+                text = text.replace(key, "********")
+        return text
 
 # ───────────────────────── YouTube Shorts ─────────────────────────
 def submit_viral_short_video(jobs, **kwargs):

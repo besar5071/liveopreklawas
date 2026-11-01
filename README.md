@@ -27,7 +27,7 @@ Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yan
 
 ## Tujuan Live tersimpan
 
-Di tab **🔴 Live 24 Jam**, buka **Tambah / hubungkan channel YouTube Live via OAuth**. Klik otorisasi, tempel URL redirect Google, pilih channel yang sudah terhubung, atur judul/visibilitas, lalu klik **Siapkan broadcast & stream key otomatis**. Aplikasi membuat broadcast dan stream YouTube, kemudian memilih tujuan RTMP otomatis. Channel harus sudah memenuhi syarat YouTube Live. Otorisasi Shorts lama perlu diulang agar memberikan izin YouTube Live.
+Di tab **🔴 Live 24 Jam**, buka **Tambah / hubungkan channel YouTube Live via OAuth**. Klik otorisasi, tempel URL redirect Google, pilih sampai lima channel akun, atur judul/visibilitas, lalu klik **Siapkan broadcast untuk channel terpilih**. Aplikasi membuat broadcast dan stream YouTube untuk tiap akun, kemudian menyiapkan tujuan RTMP otomatis. Pilih sampai lima tujuan di pemilih **Tujuan Live serentak** lalu mulai live. Channel harus sudah memenuhi syarat YouTube Live. Otorisasi Shorts lama perlu diulang agar memberikan izin YouTube Live.
 
 Sebagai alternatif, tab ini juga dapat menampilkan daftar channel RTMP tersimpan dari Secrets. Tambahkan bagian ini di Streamlit Secrets, lalu masukkan masing-masing URL dan stream key dari YouTube Live Control Room:
 
@@ -46,6 +46,6 @@ rtmp_url = "rtmps://a.rtmps.youtube.com:443/live2"
 stream_key = "STREAM_KEY_CHANNEL_KEDUA"
 ```
 
-`default` menentukan channel yang otomatis terpilih saat membuka app; channel lain dapat dipilih dari dropdown. Mode ini menyiarkan ke **satu channel yang dipilih per sesi**, bukan simulcast serentak. Stream key hanya disimpan di Secrets dan tidak ditampilkan di UI. Tanpa profil tersebut, input RTMP manual lama tetap tersedia.
+`default` menentukan channel yang otomatis terpilih saat membuka app; profil lain juga dapat dipilih. Pemilih tujuan mendukung maksimal **lima channel live serentak**, termasuk gabungan tujuan OAuth, profil Secrets, dan satu tujuan manual. Satu proses FFmpeg meneruskan stream yang sama ke semua target; trafik keluar akan bertambah kira-kira sebanding dengan jumlah channel. Stream key hanya disimpan di Secrets / session state dan tidak ditampilkan di UI.
 
 Fitur API pihak ketiga memerlukan kredensial dan kuota masing-masing. Render video menggunakan gambar Clipdrop dan FFmpeg lokal; upload dilakukan ke channel yang dipilih dengan visibilitas yang dipilih pengguna.

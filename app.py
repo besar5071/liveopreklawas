@@ -833,8 +833,8 @@ def _reset_vol():
 
 
 with tab_live:
-    st.caption("Streaming tunggal ke YouTube Live langsung dari file di Library, satu koneksi yang tidak putus "
-               "saat ganti video/lagu. Alur video: opening opsional sekali di awal → video acak berulang. "
+    st.caption("Satu proses live memakai satu encode untuk mengirim siaran ke maksimal lima channel YouTube secara bersamaan. "
+               "Pergantian video/lagu tidak memutus sesi. Alur video: opening opsional sekali di awal → video acak berulang. "
                "Audio RANDOM diputar utuh terus-menerus secara acak, independen dari pergantian video.")
     vlib = svc.library_videos()
     alib = svc.list_paths("audio")
@@ -914,34 +914,48 @@ with tab_live:
                     st.error(f"Gagal menghubungkan channel Live: {exc}")
             if live_oauth_accounts:
                 live_account_map = {a["id"]: f"📺 {a.get('channel', {}).get('title', 'Channel YouTube')}" for a in live_oauth_accounts}
-                live_account_id = st.selectbox("Channel akun untuk broadcast Live", list(live_account_map), format_func=lambda aid: live_account_map.get(aid, aid), key="l_live_oauth_account_id")
-                live_broadcast_title = st.text_input("Judul broadcast YouTube Live", value="Live 24 Jam", max_chars=100, key="l_live_broadcast_title")
+                live_account_ids = st.multiselect(
+                    "Pilih channel akun untuk disiarkan bersamaan (maksimal 5)",
+                    list(live_account_map), format_func=lambda aid: live_account_map.get(aid, aid),
+                    max_selections=5, key="l_live_oauth_account_ids",
+                )
+                live_broadcast_title = st.text_input("Judul broadcast YouTube Live (dipakai untuk semua channel terpilih)", value="Live 24 Jam", max_chars=100, key="l_live_broadcast_title")
                 live_privacy_map = {"public": "🌍 Publik", "unlisted": "🔗 Tidak Publik", "private": "🔒 Pribadi"}
                 live_broadcast_privacy = st.selectbox("Visibilitas broadcast", list(live_privacy_map), format_func=live_privacy_map.get, key="l_live_broadcast_privacy")
-                if st.button("⚙️ Siapkan broadcast & stream key otomatis", key="l_live_prepare_oauth", disabled=stream.running, width="stretch"):
-                    try:
-                        with st.spinner("Membuat broadcast dan mengambil tujuan RTMP dari YouTube..."):
-                            live_token, live_channel = _youtube_account_access_token(live_oauth_cfg, live_account_id)
-                            live_session = ytauth.create_live_session(live_token, live_broadcast_title, live_broadcast_privacy)
-                        live_profile_name = f"OAuth · {live_channel.get('title') or live_account_id} ({live_account_id[-5:]})"
+                if st.button("⚙️ Siapkan broadcast untuk channel terpilih", key="l_live_prepare_oauth", disabled=stream.running, width="stretch"):
+                    if not live_account_ids:
+                        st.warning("Pilih minimal satu channel YouTube terlebih dahulu.")
+                    else:
+                        prepared = []
+                        failures = []
                         live_session_profiles = st.session_state.setdefault("l_live_oauth_profiles", {})
-                        live_session_profiles[live_profile_name] = {
-                            "title": live_session["title"], "rtmp_url": live_session["ingestion_address"],
-                            "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
-                            "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
-                            "privacy": live_session["privacy"], "channel_id": live_account_id,
-                        }
-                        st.session_state["l_channel_profile"] = live_profile_name
-                        st.session_state["l_live_last_prepared"] = {"profile": live_profile_name, **live_session}
+                        with st.spinner(f"Menyiapkan {len(live_account_ids)} broadcast YouTube..."):
+                            for account_id in live_account_ids[:5]:
+                                try:
+                                    live_token, live_channel = _youtube_account_access_token(live_oauth_cfg, account_id)
+                                    live_session = ytauth.create_live_session(live_token, live_broadcast_title, live_broadcast_privacy)
+                                    channel_title = live_channel.get("title") or live_account_map.get(account_id, account_id)
+                                    live_profile_name = f"OAuth · {channel_title} ({account_id[-5:]})"
+                                    live_session_profiles[live_profile_name] = {
+                                        "title": live_session["title"], "rtmp_url": live_session["ingestion_address"],
+                                        "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
+                                        "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
+                                        "privacy": live_session["privacy"], "channel_id": account_id,
+                                    }
+                                    prepared.append({"profile": live_profile_name, **live_session})
+                                except Exception as exc:  # noqa: BLE001
+                                    failures.append(f"{live_account_map.get(account_id, account_id)}: {exc}")
+                        st.session_state["l_channel_profiles"] = [item["profile"] for item in prepared]
+                        st.session_state["l_live_last_prepared"] = prepared
+                        st.session_state["l_live_prepare_errors"] = failures
                         st.rerun()
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Gagal menyiapkan YouTube Live: {exc}")
-                last_live = st.session_state.get("l_live_last_prepared")
-                if last_live:
-                    st.success(f"Broadcast siap: {last_live.get('title')} · {last_live.get('privacy')}. Tujuan OAuth sudah dipilih otomatis di dropdown RTMP.")
-                    if last_live.get("watch_url"):
-                        st.link_button("🔗 Buka halaman siaran YouTube", last_live["watch_url"])
-                    st.caption("Setiap sesi Live baru memerlukan broadcast/stream baru; siapkan ulang sebelum memulai sesi berikutnya.")
+                for prepared_item in st.session_state.get("l_live_last_prepared", []):
+                    st.success(f"Broadcast siap: {prepared_item.get('title')} · {prepared_item.get('privacy')} · {prepared_item.get('profile')}")
+                    if prepared_item.get("watch_url"):
+                        st.link_button("🔗 Buka halaman siaran YouTube", prepared_item["watch_url"], key=f"l_live_watch_{prepared_item.get('broadcast_id')}")
+                for failure in st.session_state.get("l_live_prepare_errors", []):
+                    st.error(f"Broadcast tidak berhasil disiapkan: {failure}")
+                st.caption("Siapkan broadcast baru untuk tiap sesi baru. Live serentak memakai koneksi upload untuk semua channel yang dipilih.")
 
     RTMP_PRESETS = {"RTMP YouTube (standar)": "rtmp://a.rtmp.youtube.com/live2",
                     "RTMPS YouTube (terenkripsi, lebih tahan putus)": "rtmps://a.rtmps.youtube.com:443/live2",
@@ -957,37 +971,56 @@ with tab_live:
         if isinstance(config, dict):
             live_profiles[str(name)] = dict(config)
     manual_live_target = "Manual / Kustom"
-    if live_profiles:
-        live_options = [*live_profiles, manual_live_target]
-        session_default = st.session_state.get("l_channel_profile")
-        live_default = session_default if session_default in live_profiles else (
-            default_live_channel if default_live_channel in live_profiles else next(iter(live_profiles))
-        )
-        selected_live_target = st.selectbox(
-            "📺 Channel tujuan Live (default otomatis dari Secrets)",
-            live_options,
-            index=live_options.index(live_default),
-            key="l_channel_profile",
-        )
-    else:
-        selected_live_target = manual_live_target
-        st.caption("Tambahkan beberapa tujuan di Streamlit Secrets pada bagian `[live_channels]` untuk memilih channel tersimpan. Tanpa konfigurasi itu, mode RTMP manual tetap tersedia.")
-
-    if selected_live_target != manual_live_target:
-        live_profile = live_profiles[selected_live_target]
-        rtmp = str(live_profile.get("rtmp_url") or "").strip()
-        skey = str(live_profile.get("stream_key") or "").strip()
-        st.caption(f"Tujuan terpilih: **{live_profile.get('title') or selected_live_target}** · "
-                   + ("tujuan RTMP dibuat melalui OAuth; stream key disembunyikan." if live_profile.get("broadcast_id")
-                      else "URL RTMP tersimpan di Secrets; stream key tidak ditampilkan."))
-        if not rtmp or not skey:
-            st.error(f"Konfigurasi channel `{selected_live_target}` harus memiliki `rtmp_url` dan `stream_key` di Streamlit Secrets.")
-    else:
+    live_options = [*live_profiles, manual_live_target]
+    if "l_channel_profiles" not in st.session_state:
+        if default_live_channel in live_profiles:
+            initial_live_targets = [default_live_channel]
+        elif live_profiles:
+            initial_live_targets = [next(iter(live_profiles))]
+        else:
+            initial_live_targets = [manual_live_target]
+        st.session_state["l_channel_profiles"] = initial_live_targets
+    current_live_targets = st.session_state.get("l_channel_profiles", [])
+    if not isinstance(current_live_targets, list):
+        current_live_targets = []
+    st.session_state["l_channel_profiles"] = [name for name in current_live_targets if name in live_options][:5]
+    if not live_profiles:
+        st.caption("Hubungkan beberapa channel via OAuth di atas atau simpan tujuan di Secrets. Mode manual juga tersedia. Maksimal lima tujuan live bersamaan.")
+    selected_live_targets = st.multiselect(
+        "📺 Tujuan Live serentak (pilih maksimal 5 channel)", live_options,
+        max_selections=5, key="l_channel_profiles",
+        help="Satu stream FFmpeg akan diteruskan ke seluruh channel yang dipilih.",
+    )
+    rtmp, skey = "", ""
+    if manual_live_target in selected_live_targets:
         l0, l1, l2 = st.columns([1.2, 1.2, 1])
-        srv = l0.selectbox("Server tujuan", list(RTMP_PRESETS), key="l_srv")
+        srv = l0.selectbox("Server tujuan manual", list(RTMP_PRESETS), key="l_srv")
         rtmp = l1.text_input("RTMP URL", RTMP_PRESETS[srv] or "rtmp://", key=f"l_rtmp_{srv}",
                              disabled=srv != "Kustom")
-        skey = l2.text_input("Stream Key", type="password", key="l_key")
+        skey = l2.text_input("Stream Key manual", type="password", key="l_key")
+
+    live_outputs = []
+    invalid_live_targets = []
+    for target_name in selected_live_targets:
+        if target_name == manual_live_target:
+            profile_url, profile_key = rtmp.strip(), skey.strip()
+            display_name = "Tujuan manual"
+        else:
+            target_profile = live_profiles[target_name]
+            profile_url = str(target_profile.get("rtmp_url") or "").strip()
+            profile_key = str(target_profile.get("stream_key") or "").strip()
+            display_name = str(target_profile.get("title") or target_name)
+        if not profile_url or not profile_key:
+            if target_name != manual_live_target:
+                invalid_live_targets.append(target_name)
+            continue
+        live_outputs.append({"name": display_name, "rtmp_url": profile_url, "stream_key": profile_key})
+    if live_outputs:
+        st.info(f"Tujuan terpilih: **{len(live_outputs)} / 5 channel** · satu encode diteruskan ke semua channel.")
+        if len(live_outputs) > 1:
+            st.caption(f"Perhatikan bandwidth upload: trafik keluar kira-kira {len(live_outputs)}× bitrate satu tujuan. Jika satu tujuan gagal, FFmpeg berusaha melanjutkan tujuan lain; periksa Log ffmpeg untuk status tiap RTMP.")
+    if invalid_live_targets:
+        st.error("Periksa URL RTMP dan stream key untuk: " + ", ".join(invalid_live_targets))
 
     with st.expander("⚙️ Pengaturan lanjutan"):
         vmode = st.radio("Mode video", ["auto", "normalize", "copy"], horizontal=True, key="l_vmode",
@@ -1017,16 +1050,20 @@ with tab_live:
             st.error("Pilih minimal 1 video acak. Opening bersifat opsional.")
         elif not a_rand:
             st.error("Pilih minimal satu file audio random.")
-        elif not skey.strip():
-            st.error("Stream key wajib diisi atau periksa profil channel di Streamlit Secrets.")
-        elif not rtmp.strip():
-            st.error("RTMP URL wajib diisi atau periksa profil channel di Streamlit Secrets.")
+        elif not selected_live_targets:
+            st.error("Pilih minimal satu tujuan Live.")
+        elif invalid_live_targets or not live_outputs:
+            st.error("Lengkapi konfigurasi semua tujuan yang dipilih sebelum memulai.")
+        elif len(live_outputs) > 5:
+            st.error("Maksimal lima tujuan Live dapat dipilih bersamaan.")
         else:
             stream.start({"videos": all_v, "audios": all_a,
                           "v_open": active_opening, "v_rand": v_rand,
                           "a_loop": [], "a_rand": a_rand,
                           "vol_rand": vol_rand,
-                          "rtmp_url": rtmp.strip(), "stream_key": skey.strip(),
+                          "outputs": live_outputs,
+                          "rtmp_url": live_outputs[0]["rtmp_url"],
+                          "stream_key": live_outputs[0]["stream_key"],
                           "vmode": vmode, "height": l_h, "fps": l_fps, "vbr_k": l_br,
                           "shuffle": l_shuf, "disk_min_gb": disk_min}, l_hours)
             st.rerun()
