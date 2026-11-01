@@ -11,6 +11,7 @@ from urllib.parse import quote
 import pandas as pd
 import streamlit as st
 
+import audio_analysis as audioanalysis
 import mediatools as mt
 import services as svc
 import uploader
@@ -887,66 +888,88 @@ with tab_live:
         "state_secret": str(live_oauth_cfg.get("state_secret") or live_oauth_cfg.get("client_secret") or ""),
     }
     ollama_live_cfg = _secret_section("ollama")
-    ollama_live_model = str(ollama_live_cfg.get("model") or "gpt-oss:20b")
-    ollama_live_audio_default = str(ollama_live_cfg.get("audio_model") or "gemma4:e4b")
+    ollama_live_model_default = str(ollama_live_cfg.get("live_model") or "gemma4:31b")
     live_ollama_key_default = str(ollama_live_cfg.get("api_key") or st.session_state.get("vs_ollama_key") or "")
     st.session_state.setdefault("l_live_ollama_key", live_ollama_key_default)
     if not st.session_state["l_live_ollama_key"] and live_ollama_key_default:
         st.session_state["l_live_ollama_key"] = live_ollama_key_default
-    st.session_state.setdefault("l_live_ollama_audio_model", ollama_live_audio_default)
+    st.session_state.setdefault("l_live_ollama_model", ollama_live_model_default)
     st.session_state.setdefault("l_live_broadcast_title", "Live 24 Jam")
     st.session_state.setdefault("l_live_broadcast_description", "")
     with st.expander("✨ Buat judul + hashtag dan deskripsi otomatis (Ollama Cloud)"):
-        st.caption("Pilih satu audio yang digunakan pada live. Sampel 60 detik pertamanya akan ditranskripsikan oleh Ollama Cloud, lalu dipakai untuk membuat metadata yang relevan. Hasil tidak menjamin jumlah penonton atau viral.")
+        st.caption("Analisis memakai PCM 16 kHz, fitur spektral, estimasi tempo, gambar spektrogram, dan riset web; pilih hingga tiga audio live. Ini heuristik konten, bukan pengenal lagu/artis dan tidak menjamin penonton/viral.")
         ollama_live_key = st.text_input("Ollama Cloud API key", type="password", key="l_live_ollama_key")
-        ollama_live_audio_model = st.text_input(
-            "Model audio Ollama Cloud", key="l_live_ollama_audio_model",
-            help="Default gemma4:e4b; model harus mendukung audio/transcription. Bisa diatur juga melalui [ollama] audio_model di Secrets.",
+        ollama_live_model = st.text_input(
+            "Model Ollama Cloud (harus mendukung vision)", key="l_live_ollama_model",
+            help="Default gemma4:31b. Bisa diatur melalui [ollama] live_model di Secrets.",
         )
-        analysis_audio = st.selectbox(
-            "Audio sampel untuk analisis", a_rand, format_func=svc.label,
-            key="l_live_metadata_audio", placeholder="Pilih salah satu audio live...",
-            disabled=not a_rand,
-        ) if a_rand else None
+        if a_rand:
+            prior_audio_selection = st.session_state.get("l_live_metadata_audio", list(a_rand[:3]))
+            if not isinstance(prior_audio_selection, list):
+                prior_audio_selection = [prior_audio_selection] if prior_audio_selection in a_rand else list(a_rand[:3])
+            st.session_state["l_live_metadata_audio"] = [path for path in prior_audio_selection if path in a_rand][:3]
+            analysis_audios = st.multiselect(
+                "Audio live untuk dianalisis (maksimal 3 track)", a_rand,
+                format_func=svc.label, max_selections=3, key="l_live_metadata_audio",
+                help="Pilih track musik yang mewakili playlist Live; sampel PCM 20 detik per track dianalisis.",
+            )
+        else:
+            analysis_audios = []
+            st.info("Pilih audio di bagian ‘Audio random kontinu’ untuk dianalisis.")
         live_metadata_context = st.text_input(
-            "Konteks tambahan (opsional)", key="l_live_metadata_context",
+            "Topik / nama program untuk riset web (opsional)", key="l_live_metadata_context",
             placeholder="Contoh: musik relaksasi, lagu rohani, suara alam",
         )
-        if st.button("🎧 Analisis audio & buat judul + deskripsi", key="l_live_metadata_generate",
-                     disabled=not (ollama_live_key.strip() and analysis_audio), width="stretch"):
+        if st.button("🎧 Analisis PCM + spektrogram + riset & buat metadata", key="l_live_metadata_generate",
+                     disabled=not (ollama_live_key.strip() and analysis_audios and ollama_live_model.strip()), width="stretch"):
             try:
-                with st.spinner("Mengirim sampel audio ke Ollama Cloud untuk transkripsi dan optimasi metadata..."):
-                    transcript = ollama_cloud.transcribe_live_audio(
-                        ollama_live_key, analysis_audio, model=ollama_live_audio_model.strip() or ollama_live_audio_default,
-                    )
+                analysis_dir = svc.TMP / f"live-audio-analysis-{secrets.token_hex(6)}"
+                with st.spinner("Mengekstrak PCM, menghitung fitur audio, membuat spektrogram, dan meriset topik dengan Ollama Cloud..."):
+                    evidence = audioanalysis.analyze_audio(analysis_audios, analysis_dir)
                     research_token = ""
                     selected_research_accounts = st.session_state.get("l_live_oauth_account_ids", [])
-                    if selected_research_accounts:
+                    if isinstance(selected_research_accounts, list) and selected_research_accounts:
                         try:
                             research_token, _ = _youtube_account_access_token(live_oauth_cfg, selected_research_accounts[0])
                         except Exception:  # noqa: BLE001
                             research_token = ""
+                    spectrograms = [track["spectrogram"] for track in evidence.get("tracks", [])]
                     metadata = ollama_cloud.generate_live_metadata(
-                        ollama_live_key, transcript, audio_name=Path(analysis_audio).name,
-                        context=live_metadata_context, model=ollama_live_model,
-                        youtube_access_token=research_token,
+                        ollama_live_key, audio_name=", ".join(Path(path).name for path in analysis_audios),
+                        context=live_metadata_context, model=ollama_live_model.strip(),
+                        youtube_access_token=research_token, audio_analysis=evidence,
+                        spectrogram_paths=spectrograms,
                     )
-                st.session_state["l_live_audio_transcript"] = transcript
-                st.session_state["l_live_broadcast_title"] = metadata["youtube_title"]
-                st.session_state["l_live_broadcast_description"] = metadata["youtube_description"]
-                st.success("Metadata dibuat dari sampel audio. Periksa dan edit sebelum menyiapkan broadcast.")
-                if not transcript:
-                    st.warning("Tidak terdeteksi ucapan atau lirik pada sampel. Ollama menggunakan nama file dan konteks tambahan; periksa agar metadata tetap akurat.")
+                st.session_state["l_live_audio_analysis"] = evidence
+                st.session_state["l_live_audio_metadata_result"] = metadata
+                st.session_state["l_live_broadcast_title"] = metadata["title"]
+                st.session_state["l_live_broadcast_description"] = metadata["description"]
+                st.success("Metadata dibuat dari fitur PCM/spektrogram dan riset. Periksa lalu edit sebelum menyiapkan broadcast.")
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Gagal membuat metadata Live dengan Ollama Cloud: {exc}")
-        if st.session_state.get("l_live_audio_transcript"):
+        evidence = st.session_state.get("l_live_audio_analysis")
+        if isinstance(evidence, dict) and evidence.get("tracks"):
             with st.container(border=True):
-                st.caption("Hasil analisis audio Ollama (transkrip/ringkasan untuk verifikasi):")
-                st.write(st.session_state["l_live_audio_transcript"][:4000])
+                st.caption("Fitur audio hasil analisis lokal (heuristik, bukan pengenal lagu/artis):")
+                display_tracks = [{k: v for k, v in item.items() if k != "spectrogram"}
+                                  for item in evidence["tracks"] if isinstance(item, dict)]
+                if display_tracks:
+                    st.dataframe(pd.DataFrame(display_tracks), hide_index=True, width="stretch")
+                image_cols = st.columns(min(3, len(evidence["tracks"])))
+                for index, track in enumerate(evidence["tracks"][:3]):
+                    image_path = Path(track.get("spectrogram", ""))
+                    if image_path.is_file():
+                        image_cols[index].image(str(image_path), caption=f"Spektrogram · {track.get('filename', '')}", width="stretch")
+            metadata_result = st.session_state.get("l_live_audio_metadata_result", {})
+            research = metadata_result.get("research", {}) if isinstance(metadata_result, dict) else {}
+            if research.get("warning"):
+                st.caption(research["warning"])
+            for ref in research.get("references", [])[:6]:
+                st.markdown(f"- [{html.escape(str(ref.get('title') or ref.get('url') or 'Referensi'))}]({ref.get('url', '')})")
         st.text_input("Judul Live + hashtag", max_chars=100, key="l_live_broadcast_title")
         st.text_area("Deskripsi Live + hashtag", height=110, max_chars=5000,
                      key="l_live_broadcast_description")
-        st.caption("Jika channel OAuth dipilih, beberapa video populer terkait transkrip dapat dipakai sebagai inspirasi; judul tidak disalin dan hashtag bukan jaminan penonton.")
+        st.caption("Riset web hanya bahan inspirasi dan dapat kosong jika tidak tersedia; jangan anggap sebagai jaminan tren/penonton.")
 
     live_oauth_accounts = _sync_youtube_accounts()
     with st.expander("🔐 Tambah / hubungkan channel YouTube Live via OAuth", expanded=not bool(live_oauth_accounts)):

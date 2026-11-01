@@ -15,7 +15,7 @@ api_key = "CLIPDROP_API_KEY"
 [ollama]
 api_key = "OLLAMA_CLOUD_API_KEY"
 model = "gpt-oss:20b"
-audio_model = "gemma4:e4b"
+live_model = "gemma4:31b"
 
 [youtube_oauth]
 client_id = "GOOGLE_OAUTH_CLIENT_ID"
@@ -49,6 +49,6 @@ stream_key = "STREAM_KEY_CHANNEL_KEDUA"
 
 `default` menentukan channel yang otomatis terpilih saat membuka app; profil lain juga dapat dipilih. Pemilih tujuan mendukung maksimal **lima channel live serentak**, termasuk gabungan tujuan OAuth, profil Secrets, dan satu tujuan manual. Satu proses FFmpeg meneruskan stream yang sama ke semua target; trafik keluar akan bertambah kira-kira sebanding dengan jumlah channel. Stream key hanya disimpan di Secrets / session state dan tidak ditampilkan di UI.
 
-Panel **✨ Buat judul + hashtag dan deskripsi otomatis (Ollama Cloud)** menganalisis sampel 60 detik pertama dari salah satu audio Live terpilih melalui endpoint transkripsi Ollama Cloud, lalu memakai chat WAV multimodal sebagai fallback bila endpoint transkripsi tidak tersedia. Hasil judul dan deskripsi (termasuk hashtag) bisa diedit dan dipakai saat menyiapkan broadcast OAuth. API key dibaca dari `[ollama] api_key` atau input sesi; model audio default `gemma4:e4b` dapat diganti lewat `[ollama] audio_model`. File audio sampel dikirim ke Ollama Cloud; pastikan kamu memiliki hak untuk memprosesnya. Bila ada akun OAuth Live yang dipilih, aplikasi dapat memakai hasil pencarian YouTube populer sebagai inspirasi kata kunci, bukan untuk menyalin judul atau menjamin jumlah penonton. Untuk tujuan RTMP manual/Secrets, gunakan metadata yang dihasilkan sebagai referensi dan salin ke platform tujuan.
+Panel **✨ Buat judul + hashtag dan deskripsi otomatis (Ollama Cloud)** menganalisis hingga tiga audio terpilih dengan mengekstrak PCM mono 16 kHz, menghitung RMS, zero-crossing rate, spectral centroid/rolloff/flux dan estimasi tempo, serta membuat spektrogram nyata. Fitur numerik dan gambar spektrogram dikirim ke model vision Ollama Cloud bersama riset web untuk meracik metadata. Ini analisis sinyal heuristik—bukan pengenal lagu/artis atau jaminan genre/viral. Hasil judul dan deskripsi (termasuk hashtag) bisa diedit dan dipakai saat menyiapkan broadcast OAuth. API key dibaca dari `[ollama] api_key` atau input sesi; model vision Live default `gemma4:31b` dapat diganti lewat `[ollama] live_model`. Fitur numerik dan gambar spektrogram dikirim ke Ollama Cloud; PCM mentah tetap diproses lokal. Pastikan kamu memiliki hak untuk memproses audio tersebut. Referensi web hanya inspirasi kata kunci, bukan jaminan jumlah penonton. Untuk tujuan RTMP manual/Secrets, gunakan metadata yang dihasilkan sebagai referensi dan salin ke platform tujuan.
 
 Fitur API pihak ketiga memerlukan kredensial dan kuota masing-masing. Render video menggunakan gambar Clipdrop dan FFmpeg lokal; upload dilakukan ke channel yang dipilih dengan visibilitas yang dipilih pengguna.
