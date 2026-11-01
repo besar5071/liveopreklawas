@@ -25,4 +25,25 @@ state_secret = "RANDOM_LONG_PRIVATE_VALUE"
 
 Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yang sesuai dengan redirect URI di atas, dan izinkan scope upload YouTube. Setelah otorisasi, tempel URL redirect lengkap pada panel Shorts. Refresh token tersimpan di `data/youtube_accounts.json` dengan izin file terbatas; file runtime di dalam `data/` diabaikan Git. Pada Streamlit Cloud, filesystem bersifat sementara, sehingga koneksi channel dapat hilang saat instance diganti.
 
+## Tujuan Live tersimpan
+
+Tab **🔴 Live 24 Jam** dapat menampilkan daftar channel RTMP tersimpan. Tambahkan bagian ini di Streamlit Secrets, lalu masukkan masing-masing URL dan stream key dari YouTube Live Control Room:
+
+```toml
+[live_channels]
+default = "ChannelUtama"
+
+[live_channels.ChannelUtama]
+title = "Channel Utama"
+rtmp_url = "rtmps://a.rtmps.youtube.com:443/live2"
+stream_key = "STREAM_KEY_CHANNEL_UTAMA"
+
+[live_channels.ChannelKedua]
+title = "Channel Kedua"
+rtmp_url = "rtmps://a.rtmps.youtube.com:443/live2"
+stream_key = "STREAM_KEY_CHANNEL_KEDUA"
+```
+
+`default` menentukan channel yang otomatis terpilih saat membuka app; channel lain dapat dipilih dari dropdown. Mode ini menyiarkan ke **satu channel yang dipilih per sesi**, bukan simulcast serentak. Stream key hanya disimpan di Secrets dan tidak ditampilkan di UI. Tanpa profil tersebut, input RTMP manual lama tetap tersedia.
+
 Fitur API pihak ketiga memerlukan kredensial dan kuota masing-masing. Render video menggunakan gambar Clipdrop dan FFmpeg lokal; upload dilakukan ke channel yang dipilih dengan visibilitas yang dipilih pengguna.
