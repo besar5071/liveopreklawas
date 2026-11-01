@@ -13,6 +13,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse, parse_qs
 
 import requests
@@ -22,7 +23,12 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 API_ROOT = "https://www.googleapis.com/youtube/v3"
 UPLOAD_ROOT = "https://www.googleapis.com/upload/youtube/v3"
 ACCOUNT_FILE = Path(__file__).resolve().parent / "data" / "youtube_accounts.json"
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    # Required to create/bind broadcasts and streams for the 24-hour Live panel.
+    "https://www.googleapis.com/auth/youtube",
+]
 
 
 class YouTubeAuthError(RuntimeError):
@@ -150,6 +156,62 @@ def get_my_channel(access_token: str) -> dict:
         raise YouTubeAuthError("Akun Google ini tidak memiliki channel YouTube yang dapat diakses.")
     item = items[0]
     return {"id": item["id"], "title": item.get("snippet", {}).get("title", "YouTube")}
+
+
+def _live_api_call(method: str, endpoint: str, access_token: str, *, params: dict | None = None,
+                   body: dict | None = None) -> dict:
+    r = requests.request(method, API_ROOT + endpoint, params=params,
+                         headers={"Authorization": f"Bearer {access_token}"}, json=body, timeout=45)
+    if not r.ok:
+        raise YouTubeAuthError(f"YouTube Live API {endpoint} gagal ({r.status_code}): {r.text[:700]}")
+    return r.json() if r.content else {}
+
+
+def create_live_session(access_token: str, title: str, privacy: str = "public") -> dict:
+    """Create a broadcast and RTMP ingestion stream, then bind them together."""
+    title = str(title or "Live 24 Jam").strip()[:100] or "Live 24 Jam"
+    if privacy not in {"public", "unlisted", "private"}:
+        raise YouTubeAuthError("Visibilitas live tidak valid.")
+    scheduled = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    broadcast = _live_api_call("POST", "/liveBroadcasts", access_token,
+        params={"part": "snippet,contentDetails,status"},
+        body={
+            "snippet": {"title": title, "scheduledStartTime": scheduled},
+            "status": {"privacyStatus": privacy},
+            "contentDetails": {"enableAutoStart": True, "enableAutoStop": True,
+                               "latencyPreference": "low"},
+        })
+    broadcast_id = broadcast.get("id")
+    if not broadcast_id:
+        raise YouTubeAuthError("YouTube tidak mengembalikan ID siaran Live.")
+    try:
+        live_stream = _live_api_call("POST", "/liveStreams", access_token,
+            params={"part": "snippet,cdn,contentDetails"},
+            body={
+                "snippet": {"title": title[:100] + " · stream"},
+                "cdn": {"ingestionType": "rtmp", "resolution": "variable", "frameRate": "variable"},
+                "contentDetails": {"isReusable": False},
+            })
+        stream_id = live_stream.get("id")
+        ingestion = live_stream.get("cdn", {}).get("ingestionInfo", {})
+        # Prefer encrypted RTMPS when YouTube supplies it; fall back to its primary RTMP endpoint.
+        address = ingestion.get("rtmpsIngestionAddress") or ingestion.get("ingestionAddress")
+        key = ingestion.get("streamName")
+        if not stream_id or not address or not key:
+            raise YouTubeAuthError("YouTube tidak mengembalikan alamat RTMP dan stream key.")
+        _live_api_call("POST", "/liveBroadcasts/bind", access_token,
+            params={"id": broadcast_id, "streamId": stream_id, "part": "contentDetails,status"})
+        return {"broadcast_id": broadcast_id, "stream_id": stream_id,
+                "ingestion_address": address, "stream_key": key,
+                "watch_url": f"https://www.youtube.com/watch?v={broadcast_id}",
+                "title": title, "privacy": privacy}
+    except Exception:
+        # Avoid leaving an orphan scheduled broadcast if stream creation/binding fails.
+        try:
+            _live_api_call("DELETE", "/liveBroadcasts", access_token, params={"id": broadcast_id})
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 def upload_video(access_token: str, video_path: Path, title: str, description: str, tags, privacy: str = "public") -> dict:

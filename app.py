@@ -879,6 +879,70 @@ with tab_live:
         st.info(f"Alur: {opening_label}Video acak ({len(v_rand)} file · "
                 f"{_mmss(rt)} per putaran)   |   Audio random: {len(a_rand)} file · {_mmss(rat)}")
 
+    live_oauth_cfg = _secret_section("youtube_oauth")
+    live_oauth_cfg = {
+        "client_id": str(live_oauth_cfg.get("client_id") or ""),
+        "client_secret": str(live_oauth_cfg.get("client_secret") or ""),
+        "redirect_uri": str(live_oauth_cfg.get("redirect_uri") or "https://redirect1x.streamlit.app/"),
+        "state_secret": str(live_oauth_cfg.get("state_secret") or live_oauth_cfg.get("client_secret") or ""),
+    }
+    live_oauth_accounts = _sync_youtube_accounts()
+    with st.expander("🔐 Tambah / hubungkan channel YouTube Live via OAuth", expanded=not bool(live_oauth_accounts)):
+        if not (live_oauth_cfg["client_id"] and live_oauth_cfg["client_secret"] and live_oauth_cfg["state_secret"]):
+            st.warning("Isi `[youtube_oauth] client_id`, `client_secret`, dan `redirect_uri` di Streamlit Secrets terlebih dahulu.")
+        else:
+            state_secret = live_oauth_cfg["state_secret"]
+            oauth_state = st.session_state.get("yt_oauth_state")
+            if not oauth_state or not ytauth.verify_state(oauth_state, state_secret):
+                oauth_state = ytauth.make_state(state_secret)
+                st.session_state["yt_oauth_state"] = oauth_state
+            auth_url = ytauth.authorization_url(live_oauth_cfg["client_id"], live_oauth_cfg["redirect_uri"], oauth_state)
+            st.link_button("🔐 Klik untuk otorisasi / tambah channel YouTube", auth_url, type="primary")
+            st.caption("Akses ini dipakai untuk membuat broadcast dan mengambil stream key Live otomatis. Channel yang dulu hanya dihubungkan untuk Shorts perlu menyetujui izin Live ini sekali lagi.")
+            oc1, oc2 = st.columns([2.5, 1])
+            live_redirect_url = oc1.text_input("URL redirect Google setelah otorisasi", type="password", key="l_yt_redirect_url", placeholder="https://redirect1x.streamlit.app/?state=...&code=...")
+            if oc2.button("🔄 Simpan / hubungkan", key="l_yt_oauth_exchange", width="stretch"):
+                try:
+                    code = ytauth.parse_redirect_url(live_redirect_url, st.session_state.get("yt_oauth_state", ""), state_secret)
+                    token = ytauth.exchange_code(live_oauth_cfg["client_id"], live_oauth_cfg["client_secret"], live_oauth_cfg["redirect_uri"], code)
+                    channel = ytauth.get_my_channel(token["access_token"])
+                    ytauth.upsert_saved_account(token, channel)
+                    st.session_state.pop("yt_oauth_state", None)
+                    st.success(f"Channel terhubung: {channel['title']}")
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal menghubungkan channel Live: {exc}")
+            if live_oauth_accounts:
+                live_account_map = {a["id"]: f"📺 {a.get('channel', {}).get('title', 'Channel YouTube')}" for a in live_oauth_accounts}
+                live_account_id = st.selectbox("Channel akun untuk broadcast Live", list(live_account_map), format_func=lambda aid: live_account_map.get(aid, aid), key="l_live_oauth_account_id")
+                live_broadcast_title = st.text_input("Judul broadcast YouTube Live", value="Live 24 Jam", max_chars=100, key="l_live_broadcast_title")
+                live_privacy_map = {"public": "🌍 Publik", "unlisted": "🔗 Tidak Publik", "private": "🔒 Pribadi"}
+                live_broadcast_privacy = st.selectbox("Visibilitas broadcast", list(live_privacy_map), format_func=live_privacy_map.get, key="l_live_broadcast_privacy")
+                if st.button("⚙️ Siapkan broadcast & stream key otomatis", key="l_live_prepare_oauth", disabled=stream.running, width="stretch"):
+                    try:
+                        with st.spinner("Membuat broadcast dan mengambil tujuan RTMP dari YouTube..."):
+                            live_token, live_channel = _youtube_account_access_token(live_oauth_cfg, live_account_id)
+                            live_session = ytauth.create_live_session(live_token, live_broadcast_title, live_broadcast_privacy)
+                        live_profile_name = f"OAuth · {live_channel.get('title') or live_account_id} ({live_account_id[-5:]})"
+                        live_session_profiles = st.session_state.setdefault("l_live_oauth_profiles", {})
+                        live_session_profiles[live_profile_name] = {
+                            "title": live_session["title"], "rtmp_url": live_session["ingestion_address"],
+                            "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
+                            "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
+                            "privacy": live_session["privacy"], "channel_id": live_account_id,
+                        }
+                        st.session_state["l_channel_profile"] = live_profile_name
+                        st.session_state["l_live_last_prepared"] = {"profile": live_profile_name, **live_session}
+                        st.rerun()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Gagal menyiapkan YouTube Live: {exc}")
+                last_live = st.session_state.get("l_live_last_prepared")
+                if last_live:
+                    st.success(f"Broadcast siap: {last_live.get('title')} · {last_live.get('privacy')}. Tujuan OAuth sudah dipilih otomatis di dropdown RTMP.")
+                    if last_live.get("watch_url"):
+                        st.link_button("🔗 Buka halaman siaran YouTube", last_live["watch_url"])
+                    st.caption("Setiap sesi Live baru memerlukan broadcast/stream baru; siapkan ulang sebelum memulai sesi berikutnya.")
+
     RTMP_PRESETS = {"RTMP YouTube (standar)": "rtmp://a.rtmp.youtube.com/live2",
                     "RTMPS YouTube (terenkripsi, lebih tahan putus)": "rtmps://a.rtmps.youtube.com:443/live2",
                     "Kustom": ""}
@@ -889,10 +953,16 @@ with tab_live:
         for name, config in live_channels_cfg.items()
         if name != "default" and isinstance(config, dict)
     }
+    for name, config in st.session_state.get("l_live_oauth_profiles", {}).items():
+        if isinstance(config, dict):
+            live_profiles[str(name)] = dict(config)
     manual_live_target = "Manual / Kustom"
     if live_profiles:
         live_options = [*live_profiles, manual_live_target]
-        live_default = default_live_channel if default_live_channel in live_profiles else next(iter(live_profiles))
+        session_default = st.session_state.get("l_channel_profile")
+        live_default = session_default if session_default in live_profiles else (
+            default_live_channel if default_live_channel in live_profiles else next(iter(live_profiles))
+        )
         selected_live_target = st.selectbox(
             "📺 Channel tujuan Live (default otomatis dari Secrets)",
             live_options,
@@ -907,7 +977,9 @@ with tab_live:
         live_profile = live_profiles[selected_live_target]
         rtmp = str(live_profile.get("rtmp_url") or "").strip()
         skey = str(live_profile.get("stream_key") or "").strip()
-        st.caption(f"Tujuan terpilih: **{live_profile.get('title') or selected_live_target}** · URL RTMP tersimpan di Secrets; stream key tidak ditampilkan.")
+        st.caption(f"Tujuan terpilih: **{live_profile.get('title') or selected_live_target}** · "
+                   + ("tujuan RTMP dibuat melalui OAuth; stream key disembunyikan." if live_profile.get("broadcast_id")
+                      else "URL RTMP tersimpan di Secrets; stream key tidak ditampilkan."))
         if not rtmp or not skey:
             st.error(f"Konfigurasi channel `{selected_live_target}` harus memiliki `rtmp_url` dan `stream_key` di Streamlit Secrets.")
     else:
