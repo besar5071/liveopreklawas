@@ -882,11 +882,40 @@ with tab_live:
     RTMP_PRESETS = {"RTMP YouTube (standar)": "rtmp://a.rtmp.youtube.com/live2",
                     "RTMPS YouTube (terenkripsi, lebih tahan putus)": "rtmps://a.rtmps.youtube.com:443/live2",
                     "Kustom": ""}
-    l0, l1, l2 = st.columns([1.2, 1.2, 1])
-    srv = l0.selectbox("Server tujuan", list(RTMP_PRESETS), key="l_srv")
-    rtmp = l1.text_input("RTMP URL", RTMP_PRESETS[srv] or "rtmp://", key=f"l_rtmp_{srv}",
-                         disabled=srv != "Kustom")
-    skey = l2.text_input("Stream Key", type="password", key="l_key")
+    live_channels_cfg = _secret_section("live_channels")
+    default_live_channel = str(live_channels_cfg.get("default") or "")
+    live_profiles = {
+        str(name): dict(config)
+        for name, config in live_channels_cfg.items()
+        if name != "default" and isinstance(config, dict)
+    }
+    manual_live_target = "Manual / Kustom"
+    if live_profiles:
+        live_options = [*live_profiles, manual_live_target]
+        live_default = default_live_channel if default_live_channel in live_profiles else next(iter(live_profiles))
+        selected_live_target = st.selectbox(
+            "📺 Channel tujuan Live (default otomatis dari Secrets)",
+            live_options,
+            index=live_options.index(live_default),
+            key="l_channel_profile",
+        )
+    else:
+        selected_live_target = manual_live_target
+        st.caption("Tambahkan beberapa tujuan di Streamlit Secrets pada bagian `[live_channels]` untuk memilih channel tersimpan. Tanpa konfigurasi itu, mode RTMP manual tetap tersedia.")
+
+    if selected_live_target != manual_live_target:
+        live_profile = live_profiles[selected_live_target]
+        rtmp = str(live_profile.get("rtmp_url") or "").strip()
+        skey = str(live_profile.get("stream_key") or "").strip()
+        st.caption(f"Tujuan terpilih: **{live_profile.get('title') or selected_live_target}** · URL RTMP tersimpan di Secrets; stream key tidak ditampilkan.")
+        if not rtmp or not skey:
+            st.error(f"Konfigurasi channel `{selected_live_target}` harus memiliki `rtmp_url` dan `stream_key` di Streamlit Secrets.")
+    else:
+        l0, l1, l2 = st.columns([1.2, 1.2, 1])
+        srv = l0.selectbox("Server tujuan", list(RTMP_PRESETS), key="l_srv")
+        rtmp = l1.text_input("RTMP URL", RTMP_PRESETS[srv] or "rtmp://", key=f"l_rtmp_{srv}",
+                             disabled=srv != "Kustom")
+        skey = l2.text_input("Stream Key", type="password", key="l_key")
 
     with st.expander("⚙️ Pengaturan lanjutan"):
         vmode = st.radio("Mode video", ["auto", "normalize", "copy"], horizontal=True, key="l_vmode",
@@ -917,7 +946,9 @@ with tab_live:
         elif not a_rand:
             st.error("Pilih minimal satu file audio random.")
         elif not skey.strip():
-            st.error("Stream key wajib diisi.")
+            st.error("Stream key wajib diisi atau periksa profil channel di Streamlit Secrets.")
+        elif not rtmp.strip():
+            st.error("RTMP URL wajib diisi atau periksa profil channel di Streamlit Secrets.")
         else:
             stream.start({"videos": all_v, "audios": all_a,
                           "v_open": active_opening, "v_rand": v_rand,
