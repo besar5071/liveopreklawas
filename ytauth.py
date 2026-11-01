@@ -167,16 +167,17 @@ def _live_api_call(method: str, endpoint: str, access_token: str, *, params: dic
     return r.json() if r.content else {}
 
 
-def create_live_session(access_token: str, title: str, privacy: str = "public") -> dict:
+def create_live_session(access_token: str, title: str, privacy: str = "public", description: str = "") -> dict:
     """Create a broadcast and RTMP ingestion stream, then bind them together."""
     title = str(title or "Live 24 Jam").strip()[:100] or "Live 24 Jam"
+    description = str(description or "").strip()[:5000]
     if privacy not in {"public", "unlisted", "private"}:
         raise YouTubeAuthError("Visibilitas live tidak valid.")
     scheduled = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(timespec="seconds").replace("+00:00", "Z")
     broadcast = _live_api_call("POST", "/liveBroadcasts", access_token,
         params={"part": "snippet,contentDetails,status"},
         body={
-            "snippet": {"title": title, "scheduledStartTime": scheduled},
+            "snippet": {"title": title, "description": description, "scheduledStartTime": scheduled},
             "status": {"privacyStatus": privacy},
             "contentDetails": {"enableAutoStart": True, "enableAutoStop": True,
                                "latencyPreference": "low"},
