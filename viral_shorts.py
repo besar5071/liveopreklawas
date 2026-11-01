@@ -159,8 +159,10 @@ def _render(job: dict, *, clipdrop_api_key: str, header: str, body: str, clipdro
     if free < disk_min_gb:
         return False, f"Sisa disk {free:.2f} GB di bawah batas {disk_min_gb:.2f} GB."
     try:
+        # Clipdrop Text-to-Image requires multipart/form-data; requests' `data=` alone
+        # sends application/x-www-form-urlencoded, which the API may reject internally.
         response = requests.post(CLIPDROP_URL, headers={"x-api-key": clipdrop_api_key.strip()},
-                                 data={"prompt": clipdrop_prompt[:1000]}, timeout=180)
+                                 files={"prompt": (None, clipdrop_prompt[:1000], "text/plain")}, timeout=180)
         if not response.ok:
             return False, f"Clipdrop menolak permintaan ({response.status_code}): {response.text[:400]}"
         if not response.headers.get("Content-Type", "").startswith("image/"):
