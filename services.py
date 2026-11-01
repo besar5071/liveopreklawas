@@ -1777,3 +1777,25 @@ class StreamManager:
             f.seek(max(0, f.tell() - n))
             text = f.read().decode("utf-8", errors="replace")
         return text.replace(self.stream_key, "********") if self.stream_key else text
+
+# ───────────────────────── YouTube Shorts ─────────────────────────
+def submit_viral_short_video(jobs, **kwargs):
+    """Queue a 9:16 Clipdrop-backed Shorts render and optional YouTube upload."""
+    import viral_shorts
+    return viral_shorts.submit_viral_short_video(jobs, **kwargs)
+
+
+def submit_upload_short_to_youtube(jobs, **kwargs):
+    """Queue a YouTube Shorts upload for an existing video file."""
+    import viral_shorts
+    return viral_shorts.submit_upload_short_to_youtube(jobs, **kwargs)
+
+
+def list_recent_shorts() -> list[dict]:
+    import viral_shorts
+    return viral_shorts.list_recent_shorts()
+
+
+def update_short_output_entry(video_path: Path, values: dict) -> None:
+    import viral_shorts
+    viral_shorts.update_short_output_entry(video_path, values)

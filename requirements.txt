@@ -5,3 +5,4 @@ yt-dlp[default]
 deno
 requests
 numpy
+pillow
