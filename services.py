@@ -1345,8 +1345,20 @@ class StreamManager:
                     continue
                 if not self._put(sess, sess.vq, ("mark", p.name, f"{stage_name} · {'copy' if mode == 'copy' else 'transkode langsung'}")):
                     return
+                use_video_audio = cfg.get("audio_source") == "video"
+                has_video_audio = bool(cfg.get("_video_audio_available", {}).get(str(p.resolve()), False))
+                track_stop = threading.Event()
+                audio_thread = None
+                if use_video_audio and has_video_audio:
+                    audio_thread = threading.Thread(
+                        target=self._video_audio_feeder, args=(sess, p, dur, track_stop), daemon=True,
+                    )
+                    audio_thread.start()
+                elif use_video_audio:
+                    self._put(sess, sess.aq, ("video_audio", "", ""))
                 cmd = [*(NICE if mode == "live" else []), "ffmpeg", "-hide_banner", "-loglevel", "error",
-                       "-nostdin", "-fflags", "+genpts", "-i", str(src), "-map", "0:v:0", "-an"]
+                       "-nostdin", "-fflags", "+genpts", *(["-re"] if use_video_audio else []),
+                       "-i", str(src), "-map", "0:v:0", "-an"]
                 cmd += (["-c:v", "copy"] if mode == "copy"
                         else self._venc(cfg, self._br_scale))
                 cmd += ["-output_ts_offset", f"{T:.3f}", "-muxdelay", "0", "-muxpreload", "0",
@@ -1367,8 +1379,14 @@ class StreamManager:
                 if sess.procs and pr in sess.procs:
                     sess.procs.remove(pr)
                 if sess.stop.is_set():
+                    track_stop.set()
+                    if audio_thread:
+                        audio_thread.join(timeout=2)
                     return
                 if pr.returncode != 0 or got == 0:
+                    track_stop.set()
+                    if audio_thread:
+                        audio_thread.join(timeout=2)
                     bad.add(p)
                     fails += 1
                     tail = errlog.read_text(errors="replace")[-200:]
@@ -1376,11 +1394,54 @@ class StreamManager:
                     if fails > 5 or len(bad) >= len(videos):
                         raise RuntimeError(f"Video gagal diputar: {p.name}: {tail}")
                     continue
+                if audio_thread:
+                    audio_thread.join()
                 fails = 0
                 T += dur
         except Exception as e:  # noqa: BLE001
             sess.error = f"feeder video: {e}"
             sess.kill_all()
+
+    def _video_audio_feeder(self, sess: _Session, audio: Path, duration: float,
+                            track_stop: threading.Event):
+        """Feed the embedded audio for one video into the live audio pipe, paced to that video."""
+        errlog = LIVE_DIR / "feed_video_audio.log"
+        step, got, marked = PCM_SEC // 2, 0, False
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-xerror", "-nostdin", "-re",
+               "-i", str(audio), "-t", f"{max(0.5, float(duration)):.3f}", "-map", "0:a:0",
+               "-vn", "-f", "s16le", "-ar", str(PCM_RATE), "-ac", str(PCM_CH), "pipe:1"]
+        proc = None
+        try:
+            with open(errlog, "wb") as ef:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=ef, stdin=subprocess.DEVNULL)
+                sess.procs.append(proc)
+                while not sess.stop.is_set() and not track_stop.is_set():
+                    buf = proc.stdout.read(step)
+                    if not buf:
+                        break
+                    got += len(buf)
+                    if not marked:
+                        if not self._put(sess, sess.aq, ("video_audio", audio.name, "")):
+                            break
+                        marked = True
+                    if not self._put(sess, sess.aq, buf):
+                        break
+                proc.stdout.close()
+                if track_stop.is_set() and proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+            if proc in sess.procs:
+                sess.procs.remove(proc)
+            if not sess.stop.is_set() and not track_stop.is_set() and (got == 0 or proc.returncode != 0):
+                detail = errlog.read_text(errors="replace")[-240:]
+                self._log(f"audio asli video tidak terbaca ({audio.name}); bagian ini hening: {detail}")
+        except Exception as exc:  # noqa: BLE001
+            if proc and proc.poll() is None:
+                proc.kill()
+            if proc in sess.procs:
+                sess.procs.remove(proc)
+            if not sess.stop.is_set() and not track_stop.is_set():
+                self._log(f"audio asli video gagal ({audio.name}); bagian ini hening: {exc}")
 
     def _loop_audio_feeder(self, sess: _Session, audio: Path, q: queue.Queue):
         """Decode one loop file continuously; FFmpeg performs the file loop without transition gaps."""
@@ -1501,7 +1562,8 @@ class StreamManager:
                     else:
                         self.now_audio = buf[1]
                         if buf[1]:
-                            self._log(f"audio random -> {buf[1]}")
+                            audio_label = "audio asli video" if buf[0] == "video_audio" else "audio random"
+                            self._log(f"{audio_label} -> {buf[1]}")
                     continue
                 if kind in self.vol:
                     g_now = self.vol[kind]
@@ -1693,10 +1755,13 @@ class StreamManager:
     # ---------- loop utama ----------
     def _run(self, cfg: dict):
         videos = [Path(p) for p in cfg["videos"]]
-        requested_loop = [Path(p) for p in (cfg.get("a_loop") or [])][:1]
-        requested_random = [Path(p) for p in (cfg.get("a_rand") or [])]
+        audio_source = "video" if cfg.get("audio_source") == "video" else "library"
+        cfg["audio_source"] = audio_source
+        requested_loop = [] if audio_source == "video" else [Path(p) for p in (cfg.get("a_loop") or [])][:1]
+        requested_random = [] if audio_source == "video" else [Path(p) for p in (cfg.get("a_rand") or [])]
         requested_audio = list(dict.fromkeys([*requested_loop, *requested_random]))
         audio_skipped: list[tuple[Path, str]] = []
+        video_audio_available: dict[str, bool] = {}
         try:
             if not videos:
                 raise RuntimeError("Pilih minimal satu video untuk live.")
@@ -1705,6 +1770,12 @@ class StreamManager:
                 i = media_info(p)
                 if not i["ok"] or not i["v"]:
                     raise RuntimeError(f"File video tidak valid / tidak terbaca: {p.name}")
+                video_audio_available[str(p.resolve())] = bool(i.get("a"))
+            cfg["_video_audio_available"] = video_audio_available
+            if audio_source == "video":
+                random_videos = [Path(p) for p in (cfg.get("v_rand") or videos)]
+                if not any(video_audio_available.get(str(p.resolve()), False) for p in random_videos):
+                    raise RuntimeError("Mode audio asli dipilih, tetapi tidak ada video acak yang memiliki audio bawaan.")
 
             valid_audio: set[Path] = set()
             for idx, p in enumerate(requested_audio, start=1):
@@ -1727,7 +1798,7 @@ class StreamManager:
 
             for path, detail in audio_skipped:
                 self._log(f"audio dilewati saat pemeriksaan awal ({path.name}): {detail}")
-            if not audios:
+            if not audios and audio_source != "video":
                 if audio_skipped:
                     errors = "; ".join(f"{p.name}: {why}" for p, why in audio_skipped[:4])
                     raise RuntimeError(f"Tidak ada audio yang lolos pemeriksaan decode. {errors}")
@@ -1747,16 +1818,25 @@ class StreamManager:
                     self._target = (W, H, fps)
             else:
                 self._target = (W, H, fps)
+            silent_video_names = [p.name for p in videos
+                                  if not video_audio_available.get(str(p.resolve()), False)]
+            audio_note = (
+                "Audio asli memakai stream audio pertama dari video yang sedang diputar; setiap track mengikuti durasi videonya."
+                if audio_source == "video" else
+                "Audio RANDOM diputar penuh dan berulang dalam urutan acak tanpa pengulangan berurutan; "
+                "audio dibatasi limiter lalu di-encode sekali menjadi AAC."
+                if random_audio and not loop_audio else
+                "Audio LOOP dan RANDOM opsional dicampur bersamaan, dibatasi limiter, "
+                "lalu di-encode sekali menjadi AAC."
+            )
             self.notes = [
                 *(f"Audio dilewati agar tidak terputus saat live: {p.name} ({why[:120]})"
                   for p, why in audio_skipped[:10]),
-                "Urutan video: opening opsional sekali → video acak diputar penuh dan berulang; audio berjalan independen.",
+                "Urutan video: opening opsional sekali → video acak diputar penuh dan berulang.",
+                audio_note,
+                *( [f"Video tanpa audio bawaan akan hening: {', '.join(silent_video_names[:8])}"]
+                   if audio_source == "video" and silent_video_names else [] ),
                 f"Target video seragam {self._target[0]}x{self._target[1]} {self._target[2]}fps.",
-                ("Audio RANDOM diputar penuh dan berulang dalam urutan acak tanpa pengulangan berurutan; "
-                 "audio dibatasi limiter lalu di-encode sekali menjadi AAC."
-                 if random_audio and not loop_audio else
-                 "Audio LOOP dan RANDOM opsional dicampur bersamaan, dibatasi limiter, "
-                 "lalu di-encode sekali menjadi AAC."),
                 f"Bitrate transkode: {self._spec(cfg)[3]} kbps"
                 + (" (auto)" if not int(cfg.get("vbr_k") or 0) else "")
                 + "; video yang sudah cocok dikirim copy tanpa re-encode.",
