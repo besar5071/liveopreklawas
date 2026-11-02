@@ -32,6 +32,31 @@ class FakeAudioResponse:
 
 
 class MusicStudioTests(unittest.TestCase):
+    def test_create_task_rotates_to_next_key_on_explicit_credit_exhaustion(self):
+        keys = ["first-key", "second-key"]
+        balances = {music_studio.key_fingerprint(keys[0]): 9, music_studio.key_fingerprint(keys[1]): 20}
+        with patch.object(music_studio, "create_task", side_effect=[
+            music_studio.KieMusicError("Insufficient credits", 402), ("task_123", {"code": 200}),
+        ]) as create:
+            result = music_studio.create_task_with_fallback(keys, {"model": "test"}, balances)
+        self.assertEqual(result[0], "task_123")
+        self.assertEqual(result[2], 2)
+        self.assertEqual(result[3], music_studio.key_fingerprint("second-key"))
+        self.assertEqual(create.call_count, 2)
+
+    def test_create_task_skips_known_zero_balance_and_never_rotates_on_uncertain_submit(self):
+        keys = ["empty-key", "ready-key"]
+        balances = {music_studio.key_fingerprint(keys[0]): 0, music_studio.key_fingerprint(keys[1]): 10}
+        with patch.object(music_studio, "create_task", return_value=("task_123", {})) as create:
+            result = music_studio.create_task_with_fallback(keys, {"model": "test"}, balances)
+        self.assertEqual(result[2], 2)
+        self.assertEqual(create.call_count, 1)
+        with patch.object(music_studio, "create_task", side_effect=music_studio.KieMusicError("insufficient credits; result is uncertain", 503, True)) as create:
+            with self.assertRaises(music_studio.KieMusicError) as caught:
+                music_studio.create_task_with_fallback(keys, {"model": "test"})
+        self.assertTrue(caught.exception.uncertain)
+        self.assertEqual(create.call_count, 1)
+
     def test_credit_balance_reads_numeric_credit_from_provider(self):
         response = FakeResponse({"code": 200, "data": 1234.5})
         with patch.object(requests, "get", return_value=response) as get:

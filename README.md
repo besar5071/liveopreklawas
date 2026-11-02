@@ -18,7 +18,8 @@ model = "gpt-oss:20b"
 live_model = "gemma4:31b"
 
 [kie]
-api_key = "KIE_AI_API_KEY"
+api_keys = ["KIE_AI_API_KEY_1", "KIE_AI_API_KEY_2"]
+# Legacy api_key = "KIE_AI_API_KEY" tetap didukung untuk satu key
 
 [youtube_oauth]
 client_id = "GOOGLE_OAUTH_CLIENT_ID"
@@ -33,7 +34,7 @@ Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yan
 
 Tab **🎼 Musik AI** mengikuti alur pembuat lagu pada referensi: buat draf judul/lirik/style dari ide menggunakan Ollama Cloud, edit hasilnya, lalu kirim ke Kie.ai untuk membuat lagu vokal atau instrumental. Tersedia model V6, V6 Mini, dan V6 Wild, opsi karakter vokal, durasi, variasi, style weight, serta tingkat eksperimen. Tugas berjalan di Kie.ai; status diperiksa otomatis dan lagu dapat diputar. Untuk tiap hasil, pilih **Siapkan file unduhan** untuk mengunduh audio ke perangkat, atau **Simpan ke Library** agar file tersimpan di folder Audio aplikasi. Pengunduhan dibatasi 150 MB per hasil. Task ID bisa dipulihkan pada sesi berikutnya jika masih tersedia.
 
-Atur `[kie] api_key` dan, jika ingin draf lirik AI, `[ollama] api_key` di Streamlit Secrets seperti contoh di atas. Saldo credit Kie.ai yang tersedia ditampilkan untuk key aktif, otomatis dicek saat key tersedia serta diperbarui setelah tugas dikirim dan selesai; tombol **Perbarui credit Kie.ai** bisa dipakai untuk pemeriksaan manual. Angka tersebut adalah saldo dari endpoint Kie.ai, bukan perkiraan biaya tugas. Key yang diketik langsung berlaku untuk sesi browser saat ini saja dan tidak disimpan ke data job. Penggunaan Kie.ai dapat menghabiskan kredit sesuai model/tarif akun; cek judul, lirik, style dan status sebelum mencoba ulang. Jika koneksi terputus setelah permintaan dikirim, aplikasi menahan pengiriman ulang sampai statusnya diperiksa untuk membantu mencegah biaya ganda. Riwayat Task ID disimpan di sesi Streamlit (bukan file audio); unduh lagu yang ingin disimpan karena URL provider dapat kedaluwarsa.
+Atur `[kie] api_keys = ["KEY_1", "KEY_2"]` di Streamlit Secrets untuk beberapa key (maksimal lima); `[kie] api_key` tunggal lama tetap didukung. Key sesi tambahan juga bisa dimasukkan dari tab Musik. UI menjumlahkan saldo credit yang berhasil dibaca untuk seluruh key aktif dan tombol **Perbarui total credit Kie.ai** memeriksa semuanya. Saat membuat lagu, key dengan saldo 0 dilewati; jika Kie.ai secara eksplisit menolak karena credit habis, tugas dicoba pada key berikutnya. Permintaan tidak dialihkan pada timeout atau status pengiriman yang belum pasti agar tidak membuat job/biaya ganda. Saldo diperbarui setelah tugas dikirim dan selesai; angka berasal dari endpoint saldo Kie.ai, bukan perkiraan biaya tugas. Key yang diketik langsung hanya berlaku untuk sesi browser dan tidak disimpan ke data job. Penggunaan Kie.ai dapat menghabiskan kredit sesuai model/tarif akun; cek judul, lirik, style dan status sebelum mencoba ulang. Riwayat Task ID disimpan di sesi Streamlit (bukan file audio); unduh lagu yang ingin disimpan karena URL provider dapat kedaluwarsa.
 
 ## Tujuan Live tersimpan
 
