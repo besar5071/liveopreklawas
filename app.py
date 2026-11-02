@@ -28,6 +28,26 @@ STATUS_ICON = {"antre": "⏳ antre", "berjalan": "🔄 berjalan", "selesai": "�
                "gagal": "❌ gagal", "dibatalkan": "🚫 dibatalkan", "diulang": "🔁 diulang"}
 HINT_LABEL = {"auto": "Otomatis (deteksi isi file)", "video": "Video", "audio": "Audio"}
 
+MUSIC_GENRES_BY_CATEGORY = {
+    "Pop": ["Pop Indonesia", "Pop Akustik", "Pop Ballad", "Pop Rock", "Indie Pop", "City Pop", "Pop Jawa"],
+    "Rock": ["Rock", "Alternative Rock", "Soft Rock", "Hard Rock", "Punk Rock", "Metal"],
+    "Dangdut": ["Dangdut", "Dangdut Koplo", "Dangdut Pop", "Dangdut Melayu", "Campursari"],
+    "Indie & Folk": ["Indie Folk", "Folk Akustik", "Country", "Singer-Songwriter", "Bluegrass"],
+    "R&B & Soul": ["R&B", "Neo Soul", "Soul", "Funk", "Contemporary R&B"],
+    "Hip Hop & Rap": ["Hip Hop", "Rap", "Trap", "Boom Bap", "Lo-fi Hip Hop"],
+    "Elektronik & Dance": ["EDM", "House", "Deep House", "Techno", "Synthwave", "Future Bass", "Lo-fi"],
+    "Ambient & Cinematic": ["Ambient", "Cinematic", "Piano Ambient", "Orchestral Cinematic", "Drone Ambient", "Soundscape"],
+    "Jazz & Blues": ["Jazz", "Smooth Jazz", "Bossa Nova", "Blues", "Swing"],
+    "Reggae & Ska": ["Reggae", "Ska", "Dub", "Lovers Rock"],
+    "Klasik & Orkestra": ["Klasik", "Orkestra", "Piano Solo", "Musik Kamar", "Neoklasik"],
+    "Religi & Spiritual": ["Pop Religi", "Nasyid", "Spiritual", "Gospel", "Sholawat"],
+    "Lainnya": [],
+}
+MUSIC_MOODS = [
+    "Hangat dan penuh harap", "Bahagia", "Ceria", "Romantis", "Semangat", "Tenang", "Syahdu",
+    "Sedih", "Kecewa", "Rindu", "Nostalgia", "Heroik", "Misterius", "Kontemplatif", "Lainnya",
+]
+
 
 @st.cache_data(ttl=15, show_spinner=False)
 def _disk_info() -> dict:
@@ -1366,19 +1386,55 @@ with tab_music:
         st.info("Tambahkan minimal satu API key Kie.ai untuk melihat total credit tersedia dan membuat musik.")
 
     with st.expander("✨ Buat draf judul, lirik, dan style dari ide lagu", expanded=False):
-        with st.form("music_lyric_draft_form"):
-            music_idea = st.text_area("Ceritakan ide atau pesan lagu", max_chars=1200, height=100,
-                                      key="music_idea", placeholder="Contoh: Perantau rindu rumah saat hujan pertama turun di kota...")
-            idea_cols = st.columns(2)
-            idea_language = idea_cols[0].selectbox("Bahasa lirik", ["Bahasa Indonesia", "English", "Jawa", "Sunda", "Melayu", "Lainnya"], key="music_idea_language")
-            idea_genre = idea_cols[1].text_input("Genre / arah musik", value="Pop Indonesia", key="music_idea_genre")
-            idea_cols2 = st.columns(2)
-            idea_mood = idea_cols2[0].text_input("Mood", value="Hangat dan penuh harap", key="music_idea_mood")
-            idea_vocal = idea_cols2[1].selectbox("Karakter vokal", ["Otomatis", "Pria", "Wanita", "Duet"], key="music_idea_vocal")
-            idea_instrumental = st.checkbox("Draf untuk instrumental (tanpa lirik)", key="music_idea_instrumental")
-            draft_clicked = st.form_submit_button("✨ Buat draf dengan Ollama Cloud", disabled=not music_ollama_key)
+        music_idea = st.text_area("Ceritakan ide atau pesan lagu", max_chars=1200, height=100,
+                                  key="music_idea", placeholder="Contoh: Perantau rindu rumah saat hujan pertama turun di kota...")
+        idea_language_choice = st.selectbox(
+            "Bahasa lirik", ["Bahasa Indonesia", "English", "Jawa", "Sunda", "Melayu", "Lainnya"],
+            key="music_idea_language",
+        )
+        if idea_language_choice == "Lainnya":
+            idea_language = st.text_input("Sebutkan bahasa lirik", key="music_idea_custom_language",
+                                          placeholder="Contoh: Minang, Bugis, Arab")
+        else:
+            idea_language = idea_language_choice
+
+        idea_cols = st.columns(2)
+        idea_category = idea_cols[0].selectbox(
+            "Kategori musik", list(MUSIC_GENRES_BY_CATEGORY), index=list(MUSIC_GENRES_BY_CATEGORY).index("Pop"),
+            key="music_idea_category",
+        )
+        genre_options = [*MUSIC_GENRES_BY_CATEGORY[idea_category], "Lainnya"]
+        category_widget_key = "".join(char.lower() if char.isalnum() else "_" for char in idea_category).strip("_")
+        idea_genre_choice = idea_cols[1].selectbox(
+            "Genre", genre_options,
+            index=(MUSIC_GENRES_BY_CATEGORY[idea_category].index("Pop Indonesia")
+                   if idea_category == "Pop" else 0),
+            key=f"music_idea_genre_{category_widget_key}",
+        )
+        if idea_genre_choice == "Lainnya":
+            idea_genre = st.text_input("Sebutkan genre", key=f"music_idea_custom_genre_{category_widget_key}",
+                                       placeholder="Tulis genre atau arah musik")
+        else:
+            idea_genre = idea_genre_choice
+
+        idea_cols2 = st.columns(2)
+        idea_mood_choice = idea_cols2[0].selectbox("Mood", MUSIC_MOODS, key="music_idea_mood")
+        if idea_mood_choice == "Lainnya":
+            idea_mood = st.text_input("Sebutkan mood", key="music_idea_custom_mood",
+                                      placeholder="Tulis suasana lagu")
+        else:
+            idea_mood = idea_mood_choice
+        idea_vocal = idea_cols2[1].selectbox(
+            "Karakter vokal", ["Otomatis", "Pria", "Wanita", "Duet"], key="music_idea_vocal",
+        )
+        idea_instrumental = st.checkbox(
+            "Instrumental (tanpa lirik) — tetap dapat judul & style musik",
+            key="music_idea_instrumental",
+        )
         if not music_ollama_key:
             st.caption("Isi API key Ollama Cloud di atas atau Secrets `[ollama] api_key` untuk membuat draf. Isian lagu manual tetap bisa digunakan.")
+        draft_clicked = st.button("✨ Buat draf dengan Ollama Cloud", disabled=not music_ollama_key,
+                                  key="music_generate_lyric_draft")
         if draft_clicked:
             try:
                 with st.spinner("Ollama Cloud sedang menyusun draf lagu..."):
@@ -1386,7 +1442,7 @@ with tab_music:
                         music_ollama_key, music_ollama_model, music_idea, idea_language,
                         idea_genre, idea_mood,
                         {"Otomatis": "mixed", "Pria": "male", "Wanita": "female", "Duet": "duet"}.get(idea_vocal, "mixed"),
-                        idea_instrumental,
+                        idea_instrumental, category=idea_category,
                     )
                 st.session_state["music_title"] = song_draft["title"]
                 st.session_state["music_lyrics"] = song_draft["lyrics"]
