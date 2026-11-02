@@ -28,7 +28,24 @@ class LiveAudioSourceTests(unittest.TestCase):
         self.assertEqual(services._live_audio_source({"audio_source": "video"}), "video")
         self.assertEqual(services._live_audio_source({"audio_source": "Audio asli bawaan video"}), "video")
         self.assertEqual(services._live_audio_source({"a_rand": [], "a_loop": []}), "video")
-        self.assertEqual(services._live_audio_source({"audio_source": "library", "a_rand": []}), "library")
+        self.assertEqual(services._live_audio_source({"audio_source": "library", "a_rand": []}), "video")
+        self.assertEqual(services._live_audio_source({"audio_source": "library", "a_rand": [Path("track.mp3")]}), "library")
+
+    def test_empty_library_playlist_is_routed_to_embedded_audio(self):
+        manager = services.StreamManager()
+        path = Path("video-with-audio.mp4")
+        media_info = {"ok": True, "v": {"w": 1280, "h": 720, "fps": 30},
+                      "a": {"codec": "aac"}, "dur": 4.0}
+        manager._session = lambda *args: "stop"
+        manager._prep_worker = lambda _cfg: None
+        cfg = {"videos": [path], "v_rand": [path], "audio_source": "library",
+               "a_rand": [], "a_loop": [], "audios": [], "vmode": "copy"}
+        with (patch.object(services, "media_info", return_value=media_info),
+              patch.object(services, "video_copy_ok", return_value=(True, ""))):
+            manager._run(cfg)
+        self.assertEqual(cfg["audio_source"], "video")
+        self.assertEqual(manager.state, "idle")
+        self.assertTrue(any("Audio asli memakai stream audio pertama" in note for note in manager.notes))
 
     def test_original_audio_mode_rejects_a_random_video_playlist_without_audio(self):
         manager = services.StreamManager()

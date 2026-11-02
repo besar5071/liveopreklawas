@@ -969,11 +969,11 @@ def _live_audio_source(cfg: dict) -> str:
     value = str(raw or "").strip().lower()
     if value in {"video", "original", "embedded", "video_original", "audio asli bawaan video"}:
         return "video"
-    if value == "library":
-        return "library"
-    # Older UI builds may submit an empty audio selection without the new mode field.
-    # Since Library mode requires an explicit audio pick, treat that legacy shape as video audio.
-    if not value and not any(cfg.get(key) for key in ("a_loop", "a_rand", "audios")):
+    has_extra_audio = any(cfg.get(key) for key in ("a_loop", "a_rand", "audios"))
+    # Audio Library mode requires a selected track. If none was passed, infer that the
+    # request is for embedded video audio, even if an older/stale UI supplied "library".
+    # This prevents the generic "choose a valid audio" failure when the video is the source.
+    if not value or not has_extra_audio:
         return "video"
     return "library"
 
