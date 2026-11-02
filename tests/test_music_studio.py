@@ -133,8 +133,11 @@ class MusicStudioTests(unittest.TestCase):
 
     def test_ollama_song_draft_parses_and_clears_instrumental_lyrics(self):
         reply = json.dumps({"title": "Hujan di Kota", "lyrics": "[Verse]\\nLangit turun", "style": "Pop ballad, piano"})
-        with patch.object(ollama_cloud, "_chat", return_value=reply):
-            draft = ollama_cloud.generate_song_draft("key", "gpt-oss:20b", "Rindu rumah", instrumental=True)
+        with patch.object(ollama_cloud, "_chat", return_value=reply) as chat:
+            draft = ollama_cloud.generate_song_draft(
+                "key", "gpt-oss:20b", "Rindu rumah", instrumental=True, category="Ambient & Cinematic"
+            )
+        self.assertIn('"category": "Ambient & Cinematic"', chat.call_args.args[3])
         self.assertEqual(draft["title"], "Hujan di Kota")
         self.assertEqual(draft["lyrics"], "")
         self.assertEqual(draft["style"], "Pop ballad, piano")
