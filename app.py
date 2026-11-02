@@ -1000,41 +1000,78 @@ with tab_live:
             if live_oauth_accounts:
                 live_account_map = {a["id"]: f"📺 {a.get('channel', {}).get('title', 'Channel YouTube')}" for a in live_oauth_accounts}
                 live_account_ids = st.multiselect(
-                    "Pilih channel akun untuk disiarkan bersamaan (maksimal 5)",
+                    "Pilih akun/channel YouTube Live (maksimal 5 akun)",
                     list(live_account_map), format_func=lambda aid: live_account_map.get(aid, aid),
                     max_selections=5, key="l_live_oauth_account_ids",
                 )
+                live_broadcast_counts = {}
+                if live_account_ids:
+                    count_cols = st.columns(min(3, len(live_account_ids)))
+                    for index, account_id in enumerate(live_account_ids):
+                        count_key = f"l_live_broadcast_count_{account_id}"
+                        try:
+                            prior_count = int(st.session_state.get(count_key, 1))
+                        except (TypeError, ValueError):
+                            prior_count = 1
+                        st.session_state[count_key] = max(1, min(5, prior_count))
+                        with count_cols[index % len(count_cols)]:
+                            live_broadcast_counts[account_id] = st.number_input(
+                                f"Jumlah Live · {live_account_map.get(account_id, account_id)}",
+                                min_value=1, max_value=5, step=1, key=count_key,
+                                help="Setiap Live mendapat broadcast dan stream key YouTube yang unik.",
+                            )
+                total_prepared_lives = sum(live_broadcast_counts.values())
+                if total_prepared_lives > 5:
+                    st.error(f"Total slot yang diminta {total_prepared_lives}; batas aplikasi adalah 5 Live per sesi. Kurangi jumlah pada salah satu akun.")
+                elif live_account_ids:
+                    st.caption(f"Akan disiapkan {total_prepared_lives} broadcast unik dari {len(live_account_ids)} akun (maksimal 5 total).")
                 live_broadcast_title = str(st.session_state.get("l_live_broadcast_title", "Live 24 Jam"))[:100]
                 live_broadcast_description = str(st.session_state.get("l_live_broadcast_description", ""))[:5000]
                 live_privacy_map = {"public": "🌍 Publik", "unlisted": "🔗 Tidak Publik", "private": "🔒 Pribadi"}
                 live_broadcast_privacy = st.selectbox("Visibilitas broadcast", list(live_privacy_map), format_func=live_privacy_map.get, key="l_live_broadcast_privacy")
-                if st.button("⚙️ Siapkan broadcast untuk channel terpilih", key="l_live_prepare_oauth", disabled=stream.running, width="stretch"):
+                if st.button("⚙️ Siapkan broadcast/slot Live", key="l_live_prepare_oauth",
+                             disabled=stream.running or total_prepared_lives > 5, width="stretch"):
                     if not live_account_ids:
                         st.warning("Pilih minimal satu channel YouTube terlebih dahulu.")
+                    elif total_prepared_lives > 5:
+                        st.error("Maksimal lima broadcast/slot Live dapat disiapkan dalam satu sesi.")
                     else:
                         prepared = []
                         failures = []
                         live_session_profiles = st.session_state.setdefault("l_live_oauth_profiles", {})
-                        with st.spinner(f"Menyiapkan {len(live_account_ids)} broadcast YouTube..."):
-                            for account_id in live_account_ids[:5]:
+                        with st.spinner(f"Menyiapkan {total_prepared_lives} broadcast unik di YouTube..."):
+                            for account_id in live_account_ids:
+                                channel_label = live_account_map.get(account_id, account_id)
                                 try:
                                     live_token, live_channel = _youtube_account_access_token(live_oauth_cfg, account_id)
-                                    live_session = ytauth.create_live_session(
-                                        live_token, live_broadcast_title, live_broadcast_privacy,
-                                        description=live_broadcast_description,
-                                    )
-                                    channel_title = live_channel.get("title") or live_account_map.get(account_id, account_id)
-                                    live_profile_name = f"OAuth · {channel_title} ({account_id[-5:]})"
-                                    live_session_profiles[live_profile_name] = {
-                                        "title": live_session["title"], "description": live_broadcast_description,
-                                        "rtmp_url": live_session["ingestion_address"],
-                                        "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
-                                        "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
-                                        "privacy": live_session["privacy"], "channel_id": account_id,
-                                    }
-                                    prepared.append({"profile": live_profile_name, **live_session})
                                 except Exception as exc:  # noqa: BLE001
-                                    failures.append(f"{live_account_map.get(account_id, account_id)}: {exc}")
+                                    failures.append(f"{channel_label}: {exc}")
+                                    continue
+                                channel_title = live_channel.get("title") or channel_label
+                                slot_count = int(live_broadcast_counts.get(account_id, 1))
+                                for slot_index in range(1, slot_count + 1):
+                                    suffix = f" · Live {slot_index}"
+                                    session_title = live_broadcast_title
+                                    if slot_count > 1:
+                                        session_title = f"{live_broadcast_title[:100 - len(suffix)].rstrip()}{suffix}"
+                                    live_profile_name = f"OAuth · {channel_title} ({account_id[-5:]})"
+                                    if slot_count > 1:
+                                        live_profile_name += suffix
+                                    try:
+                                        live_session = ytauth.create_live_session(
+                                            live_token, session_title, live_broadcast_privacy,
+                                            description=live_broadcast_description,
+                                        )
+                                        live_session_profiles[live_profile_name] = {
+                                            "title": live_session["title"], "description": live_broadcast_description,
+                                            "rtmp_url": live_session["ingestion_address"],
+                                            "stream_key": live_session["stream_key"], "broadcast_id": live_session["broadcast_id"],
+                                            "stream_id": live_session["stream_id"], "watch_url": live_session["watch_url"],
+                                            "privacy": live_session["privacy"], "channel_id": account_id,
+                                        }
+                                        prepared.append({"profile": live_profile_name, **live_session})
+                                    except Exception as exc:  # noqa: BLE001
+                                        failures.append(f"{channel_label} · Live {slot_index}: {exc}")
                         st.session_state["l_channel_profiles"] = [item["profile"] for item in prepared]
                         st.session_state["l_live_last_prepared"] = prepared
                         st.session_state["l_live_prepare_errors"] = failures
@@ -1052,7 +1089,7 @@ with tab_live:
                         st.link_button("🔗 Buka halaman siaran YouTube", prepared_item["watch_url"], key=f"l_live_watch_{prepared_item.get('broadcast_id', 'live')}")
                 for failure in st.session_state.get("l_live_prepare_errors", []):
                     st.error(f"Broadcast tidak berhasil disiapkan: {failure}")
-                st.caption("Siapkan broadcast baru untuk tiap sesi baru. Live serentak memakai koneksi upload untuk semua channel yang dipilih.")
+                st.caption("Siapkan broadcast baru untuk setiap sesi YouTube. Semua slot serentak memakai feed video/audio yang sama.")
 
     RTMP_PRESETS = {"RTMP YouTube (standar)": "rtmp://a.rtmp.youtube.com/live2",
                     "RTMPS YouTube (terenkripsi, lebih tahan putus)": "rtmps://a.rtmps.youtube.com:443/live2",
@@ -1083,10 +1120,15 @@ with tab_live:
     st.session_state["l_channel_profiles"] = [name for name in current_live_targets if name in live_options][:5]
     if not live_profiles:
         st.caption("Hubungkan beberapa channel via OAuth di atas atau simpan tujuan di Secrets. Mode manual juga tersedia. Maksimal lima tujuan live bersamaan.")
+    live_run_mode = st.radio(
+        "Mode menjalankan slot Live",
+        ["Serentak", "Bergantian (manual)"], horizontal=True, key="l_live_run_mode",
+        help="Serentak: satu feed video/audio yang sama dikirim ke semua slot terpilih. Bergantian: pilih satu slot per sesi; hentikan Live aktif lalu pilih slot berikutnya secara manual.",
+    )
     selected_live_targets = st.multiselect(
-        "📺 Tujuan Live serentak (pilih maksimal 5 channel)", live_options,
+        "📺 Pilih slot/broadcast Live (maksimal 5)", live_options,
         max_selections=5, key="l_channel_profiles",
-        help="Satu stream FFmpeg akan diteruskan ke seluruh channel yang dipilih.",
+        help="Slot OAuth dari akun yang sama menggunakan stream key berbeda. Satu feed FFmpeg dipakai bersama semua slot pada mode serentak.",
     )
     rtmp, skey = "", ""
     if manual_live_target in selected_live_targets:
@@ -1112,8 +1154,13 @@ with tab_live:
                 invalid_live_targets.append(target_name)
             continue
         live_outputs.append({"name": display_name, "rtmp_url": profile_url, "stream_key": profile_key})
-    if live_outputs:
-        st.info(f"Tujuan terpilih: **{len(live_outputs)} / 5 channel** · satu encode diteruskan ke semua channel.")
+    if live_run_mode == "Bergantian (manual)":
+        if len(selected_live_targets) == 1:
+            st.info("Mode bergantian manual: 1 slot untuk sesi ini. Hentikan siaran, pilih slot berikutnya, lalu mulai lagi.")
+        else:
+            st.warning(f"Mode bergantian memerlukan tepat satu slot terpilih; saat ini {len(selected_live_targets)} dipilih.")
+    elif live_outputs:
+        st.info(f"Mode serentak: **{len(live_outputs)} / 5 Live** · feed video/audio yang sama dikirim ke semua slot terpilih.")
         if len(live_outputs) > 1:
             st.caption(f"Perhatikan bandwidth upload: trafik keluar kira-kira {len(live_outputs)}× bitrate satu tujuan. Jika satu tujuan gagal, FFmpeg berusaha melanjutkan tujuan lain; periksa Log ffmpeg untuk status tiap RTMP.")
     if invalid_live_targets:
@@ -1142,7 +1189,9 @@ with tab_live:
             st.toast(f"{svc.clear_live_cache()} file cache dihapus")
 
     s1, s2 = st.columns(2)
-    if s1.button("▶️ Mulai Live", type="primary", disabled=stream.running, width="stretch"):
+    if s1.button("▶️ Mulai Live", type="primary",
+                 disabled=stream.running or (live_run_mode == "Bergantian (manual)" and len(selected_live_targets) > 1),
+                 width="stretch"):
         if not v_rand:
             st.error("Pilih minimal 1 video acak. Opening bersifat opsional.")
         elif not a_rand:
@@ -1151,6 +1200,8 @@ with tab_live:
             st.error("Pilih minimal satu tujuan Live.")
         elif invalid_live_targets or not live_outputs:
             st.error("Lengkapi konfigurasi semua tujuan yang dipilih sebelum memulai.")
+        elif live_run_mode == "Bergantian (manual)" and len(live_outputs) != 1:
+            st.error("Mode bergantian menjalankan satu slot per sesi. Pilih satu slot, mulai/hentikan, lalu pilih slot berikutnya.")
         elif len(live_outputs) > 5:
             st.error("Maksimal lima tujuan Live dapat dipilih bersamaan.")
         else:
