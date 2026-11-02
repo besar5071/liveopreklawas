@@ -172,6 +172,47 @@ def _chat_live_metadata(api_key: str, model: str, topic: str, audio_analysis: di
             ) from exc
 
 
+def generate_song_draft(api_key: str, model: str, idea: str, language: str = "Bahasa Indonesia",
+                        genre: str = "Pop", mood: str = "Hangat", vocal: str = "mixed",
+                        instrumental: bool = False) -> dict:
+    """Draft original, editable song metadata and lyrics for the Music Studio."""
+    if not api_key.strip():
+        raise OllamaCloudError("API key Ollama Cloud belum diisi.")
+    idea = str(idea or "").strip()[:1200]
+    if len(idea) < 8:
+        raise OllamaCloudError("Ceritakan ide lagu dengan sedikit lebih detail (minimal 8 karakter).")
+    brief = {"idea": idea, "lyric_language": str(language or "Bahasa Indonesia")[:60],
+             "genre": str(genre or "Pop")[:120], "mood": str(mood or "Hangat")[:120],
+             "vocal": str(vocal or "mixed")[:30], "instrumental": bool(instrumental)}
+    system = (
+        "You are an Indonesian songwriter and music arranger. Create an original song concept; never quote or imitate "
+        "existing lyrics or a named artist. Return exactly one JSON object with string keys title, lyrics, style. "
+        "The title must be <=80 characters, lyrics <=5000 characters, and style <=1000 characters. "
+        "Use clear song sections such as [Verse], [Pre-Chorus], [Chorus], and [Bridge] where appropriate. "
+        "Write lyrics in the requested language. Keep style as a concise Suno-compatible production prompt describing "
+        "genre, instruments, mood, tempo, vocal character, and arrangement. For instrumental=true, lyrics must be an empty string. "
+        "Do not include Markdown fences or commentary."
+    )
+    prompt = "Create a song draft from this brief:\n" + json.dumps(brief, ensure_ascii=False)
+    content = _chat(api_key, model or "gpt-oss:20b", system, prompt)
+    try:
+        result = _json_from_text(content)
+    except OllamaCloudError:
+        retry_system = "Return only one valid JSON object with string keys title, lyrics, style. No Markdown."
+        content = _chat(api_key, model or "gpt-oss:20b", retry_system,
+                        prompt + "\nOutput requirements: title <=80 characters; lyrics <=5000; style <=1000. "
+                        "Original lyrics only. instrumental=" + str(bool(instrumental)).lower())
+        result = _json_from_text(content)
+    draft = {key: str(result.get(key) or "").strip() for key in ("title", "lyrics", "style")}
+    if not draft["title"] or not draft["style"]:
+        raise OllamaCloudError("Draf lagu Ollama harus memiliki judul dan style musik.")
+    if instrumental:
+        draft["lyrics"] = ""
+    if len(draft["title"]) > 80 or len(draft["lyrics"]) > 5000 or len(draft["style"]) > 1000:
+        raise OllamaCloudError("Draf lagu melewati batas panjang. Coba ulangi dengan ide yang lebih ringkas.")
+    return draft
+
+
 def _normalize_live_metadata(data: dict) -> dict:
     hashtags = []
     for item in data.get("hashtags", []):

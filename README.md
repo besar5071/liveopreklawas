@@ -17,6 +17,9 @@ api_key = "OLLAMA_CLOUD_API_KEY"
 model = "gpt-oss:20b"
 live_model = "gemma4:31b"
 
+[kie]
+api_key = "KIE_AI_API_KEY"
+
 [youtube_oauth]
 client_id = "GOOGLE_OAUTH_CLIENT_ID"
 client_secret = "GOOGLE_OAUTH_CLIENT_SECRET"
@@ -25,6 +28,12 @@ state_secret = "RANDOM_LONG_PRIVATE_VALUE"
 ```
 
 Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yang sesuai dengan redirect URI di atas, dan izinkan akses YouTube. Setelah otorisasi, tempel URL redirect lengkap pada panel Shorts atau Live. Refresh token tersimpan di `data/youtube_accounts.json` dengan izin file terbatas; file runtime di dalam `data/` diabaikan Git. Pada Streamlit Cloud, filesystem bersifat sementara, sehingga koneksi channel dapat hilang saat instance diganti. Akses YouTube Live mencakup pembuatan broadcast dan stream, jadi channel yang pernah dihubungkan untuk Shorts perlu menyetujui scope Live yang lebih luas dengan login OAuth ulang.
+
+## Music Studio AI
+
+Tab **🎼 Musik AI** mengikuti alur pembuat lagu pada referensi: buat draf judul/lirik/style dari ide menggunakan Ollama Cloud, edit hasilnya, lalu kirim ke Kie.ai untuk membuat lagu vokal atau instrumental. Tersedia model V6, V6 Mini, dan V6 Wild, opsi karakter vokal, durasi, variasi, style weight, serta tingkat eksperimen. Tugas berjalan di Kie.ai; status diperiksa otomatis dan lagu dapat diputar atau dibuka/diunduh dari tautan hasil. Task ID bisa dipulihkan pada sesi berikutnya jika masih tersedia.
+
+Atur `[kie] api_key` dan, jika ingin draf lirik AI, `[ollama] api_key` di Streamlit Secrets seperti contoh di atas. Key yang diketik langsung berlaku untuk sesi browser saat ini saja dan tidak disimpan ke data job. Penggunaan Kie.ai dapat menghabiskan kredit sesuai model/tarif akun; cek judul, lirik, style dan status sebelum mencoba ulang. Jika koneksi terputus setelah permintaan dikirim, aplikasi menahan pengiriman ulang sampai statusnya diperiksa untuk membantu mencegah biaya ganda. Riwayat Task ID disimpan di sesi Streamlit (bukan file audio); unduh lagu yang ingin disimpan karena URL provider dapat kedaluwarsa.
 
 ## Tujuan Live tersimpan
 

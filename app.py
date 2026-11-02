@@ -17,8 +17,9 @@ import services as svc
 import uploader
 import ytauth
 import ollama_cloud
+import music_studio as musicapi
 
-st.set_page_config(page_title="Studio Render & Live", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Studio Render, Live & Musik", page_icon="📡", layout="wide")
 
 
 KIND_LABEL = {"video": "🎞️ Video", "audio": "🎵 Audio", "output": "📦 Hasil",
@@ -113,10 +114,10 @@ with st.sidebar:
     st.caption("⚠️ Penyimpanan Streamlit Cloud tidak permanen. File bisa hilang saat app "
                "restart/redeploy; download hasil penting dari tab Library.")
 
-st.title("Studio Render & Live")
+st.title("Studio Render, Live & Musik")
 
-tab_lib, tab_imp, tab_shorts, tab_norm, tab_live, tab_jobs = st.tabs(
-    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "⚙️ Job"])
+tab_lib, tab_imp, tab_shorts, tab_norm, tab_live, tab_music, tab_jobs = st.tabs(
+    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "🎼 Musik AI", "⚙️ Job"])
 
 # ───────────── LIBRARY ─────────────
 with tab_lib:
@@ -1246,6 +1247,250 @@ with tab_live:
             st.code(stream.log_tail() or "(kosong)", language="text")
 
     live_status()
+
+# ───────────── MUSIC STUDIO ─────────────
+with tab_music:
+    st.caption("Susun lirik dari ide dengan Ollama Cloud, lalu buat lagu yang bisa diputar dan diunduh melalui Kie.ai. "
+               "Fitur ini mengikuti alur pada file referensi; bagian tilawah dari file tersebut tidak dimasukkan ke aplikasi.")
+    kie_cfg = _secret_section("kie")
+    ollama_cfg = _secret_section("ollama")
+    kie_secret = str(kie_cfg.get("api_key") or "").strip()
+    ollama_secret = str(ollama_cfg.get("api_key") or "").strip()
+    st.session_state.setdefault("music_kie_api_key", "")
+    st.session_state.setdefault("music_ollama_api_key", "")
+    key_col, model_col = st.columns([1.3, 1])
+    with key_col:
+        music_kie_key_input = st.text_input(
+            "Kie.ai API key", type="password", key="music_kie_api_key",
+            help="Kunci hanya dipakai dari server untuk permintaan Kie.ai dan tidak disimpan ke riwayat lagu.",
+        )
+        music_kie_key = music_kie_key_input.strip() or kie_secret
+        st.caption("Kunci dari Secrets `[kie] api_key` tersedia." if kie_secret and not music_kie_key_input.strip()
+                   else "Key sesi tidak persisten; simpan permanen di Secrets server bila diperlukan.")
+    with model_col:
+        music_ollama_key_input = st.text_input(
+            "Ollama Cloud API key (opsional, untuk draf lirik)", type="password", key="music_ollama_api_key",
+            help="Bisa juga dibaca dari Secrets `[ollama] api_key`.",
+        )
+        music_ollama_key = music_ollama_key_input.strip() or ollama_secret
+        st.session_state.setdefault("music_ollama_model", str(ollama_cfg.get("model") or "gpt-oss:20b"))
+        music_ollama_model = st.text_input("Model draf lagu", key="music_ollama_model")
+
+    with st.expander("✨ Buat draf judul, lirik, dan style dari ide lagu", expanded=False):
+        with st.form("music_lyric_draft_form"):
+            music_idea = st.text_area("Ceritakan ide atau pesan lagu", max_chars=1200, height=100,
+                                      key="music_idea", placeholder="Contoh: Perantau rindu rumah saat hujan pertama turun di kota...")
+            idea_cols = st.columns(2)
+            idea_language = idea_cols[0].selectbox("Bahasa lirik", ["Bahasa Indonesia", "English", "Jawa", "Sunda", "Melayu", "Lainnya"], key="music_idea_language")
+            idea_genre = idea_cols[1].text_input("Genre / arah musik", value="Pop Indonesia", key="music_idea_genre")
+            idea_cols2 = st.columns(2)
+            idea_mood = idea_cols2[0].text_input("Mood", value="Hangat dan penuh harap", key="music_idea_mood")
+            idea_vocal = idea_cols2[1].selectbox("Karakter vokal", ["Otomatis", "Pria", "Wanita", "Duet"], key="music_idea_vocal")
+            idea_instrumental = st.checkbox("Draf untuk instrumental (tanpa lirik)", key="music_idea_instrumental")
+            draft_clicked = st.form_submit_button("✨ Buat draf dengan Ollama Cloud", disabled=not music_ollama_key)
+        if not music_ollama_key:
+            st.caption("Isi API key Ollama Cloud di atas atau Secrets `[ollama] api_key` untuk membuat draf. Isian lagu manual tetap bisa digunakan.")
+        if draft_clicked:
+            try:
+                with st.spinner("Ollama Cloud sedang menyusun draf lagu..."):
+                    song_draft = ollama_cloud.generate_song_draft(
+                        music_ollama_key, music_ollama_model, music_idea, idea_language,
+                        idea_genre, idea_mood,
+                        {"Otomatis": "mixed", "Pria": "male", "Wanita": "female", "Duet": "duet"}.get(idea_vocal, "mixed"),
+                        idea_instrumental,
+                    )
+                st.session_state["music_title"] = song_draft["title"]
+                st.session_state["music_lyrics"] = song_draft["lyrics"]
+                st.session_state["music_style"] = song_draft["style"]
+                st.session_state["music_instrumental"] = idea_instrumental
+                st.success("Draf siap dan bisa diedit sebelum dikirim ke Kie.ai.")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Draf lagu gagal dibuat: {exc}")
+
+    music_jobs_state = st.session_state.setdefault("music_studio_jobs", [])
+    active_music_count = sum(job.get("status") in {"waiting", "generating", "paused"} for job in music_jobs_state)
+    st.markdown("#### 🎼 Detail lagu")
+    if active_music_count >= 5:
+        st.warning("Ada lima tugas musik yang masih aktif/menunggu pemeriksaan. Selesaikan atau periksa dulu sebelum mengirim tugas baru.")
+    with st.form("music_generate_form"):
+        type_col, model_col2, vocal_col = st.columns(3)
+        instrumental = type_col.checkbox("Instrumental (tanpa lirik/vokal)", key="music_instrumental")
+        music_model = model_col2.selectbox("Model generator", ["V6", "V6_MINI", "V6_WILD"],
+                                           format_func={"V6": "V6 · standar", "V6_MINI": "V6 Mini", "V6_WILD": "V6 Wild"}.get,
+                                           key="music_model")
+        vocal_gender_label = vocal_col.selectbox("Karakter vokal", ["Otomatis", "Pria", "Wanita"], disabled=instrumental,
+                                                 key="music_vocal_gender")
+        music_title = st.text_input("Judul lagu (maks. 80 karakter)", max_chars=80, key="music_title")
+        music_lyrics = st.text_area("Lirik (maks. 5.000 karakter)", max_chars=5000, height=220,
+                                    disabled=instrumental, key="music_lyrics",
+                                    placeholder="Gunakan struktur seperti [Verse], [Pre-Chorus], [Chorus] dan [Bridge].")
+        music_style = st.text_area("Style musik (maks. 1.000 karakter)", max_chars=1000, height=100,
+                                   key="music_style", placeholder="Contoh: Indonesian pop ballad, warm piano, acoustic guitar, emotional, 80 BPM")
+        with st.expander("Pengaturan tambahan"):
+            music_negative = st.text_input("Hindari gaya atau suara (opsional)", max_chars=1000, key="music_negative")
+            advanced_cols = st.columns(4)
+            use_duration = advanced_cols[0].checkbox("Atur durasi", key="music_use_duration")
+            music_duration = advanced_cols[0].number_input("Durasi, detik", min_value=10, max_value=360, value=180,
+                                                           step=1, disabled=not use_duration, key="music_duration")
+            use_variety = advanced_cols[1].checkbox("Atur variasi", key="music_use_variety")
+            music_variety = advanced_cols[1].number_input("Variasi (0–4)", min_value=0, max_value=4, value=2,
+                                                          step=1, disabled=not use_variety, key="music_variety")
+            use_style_weight = advanced_cols[2].checkbox("Atur kekuatan style", key="music_use_style_weight")
+            music_style_weight = advanced_cols[2].slider("Kekuatan style", 0.0, 1.0, 0.65, 0.01,
+                                                          disabled=not use_style_weight, key="music_style_weight")
+            use_weirdness = advanced_cols[3].checkbox("Atur eksperimen", key="music_use_weirdness")
+            music_weirdness = advanced_cols[3].slider("Eksperimen", 0.0, 1.0, 0.65, 0.01,
+                                                       disabled=not use_weirdness, key="music_weirdness")
+        st.warning("Setiap permintaan memakai kredit Kie.ai sesuai tarif akun dan tugas yang diterima tetap berjalan meski tab ditutup. Periksa title/lirik/style sebelum generate.")
+        music_submit = st.form_submit_button("🎵 Generate Musik", type="primary",
+                                             disabled=not music_kie_key or st.session_state.get("music_create_uncertain", False) or active_music_count >= 5)
+
+    if st.session_state.get("music_create_uncertain"):
+        st.error("Status permintaan terakhir belum pasti. Periksa Task ID/akun Kie.ai sebelum mencoba lagi agar tidak terkena biaya ganda.")
+        if st.button("Saya sudah memeriksa Kie.ai; izinkan permintaan baru", key="music_ack_uncertain"):
+            st.session_state["music_create_uncertain"] = False
+            st.rerun()
+    elif not music_kie_key:
+        st.info("Masukkan Kie.ai API key atau atur `[kie] api_key` di Secrets untuk mengaktifkan generator.")
+
+    if music_submit:
+        request_input = {"custom_mode": True, "instrumental": instrumental, "model": music_model,
+                         "title": music_title, "style": music_style}
+        if instrumental:
+            request_input["prompt"] = music_style
+        else:
+            request_input["lyrics"] = music_lyrics
+            if len(music_lyrics) <= 3000:
+                request_input["prompt"] = music_lyrics
+            if vocal_gender_label in {"Pria", "Wanita"}:
+                request_input["vocal_gender"] = "m" if vocal_gender_label == "Pria" else "f"
+        if music_negative.strip():
+            request_input["negative_tags"] = music_negative.strip()
+        if use_duration:
+            request_input["duration"] = int(music_duration)
+        if use_variety:
+            request_input["variety"] = int(music_variety)
+        if use_style_weight:
+            request_input["style_weight"] = float(music_style_weight)
+        if use_weirdness:
+            request_input["weirdness_constraint"] = float(music_weirdness)
+        try:
+            request_body = musicapi.validate_request({"model": "ai-music-api/generate", "input": request_input})
+            with st.spinner("Mengirim tugas ke Kie.ai..."):
+                task_id, _provider_response = musicapi.create_task(music_kie_key, request_body)
+            jobs_list = st.session_state.setdefault("music_studio_jobs", [])
+            jobs_list[:] = [job for job in jobs_list if job.get("id") != task_id]
+            jobs_list.insert(0, {"id": task_id, "title": music_title.strip(), "model": music_model,
+                                 "instrumental": instrumental, "created_at": time.time(), "status": "waiting",
+                                 "message": "Tugas diterima Kie.ai. Menunggu proses musik.", "progress": None,
+                                 "tracks": [], "next_poll_at": 0, "poll_failures": 0})
+            if len(jobs_list) > 40:
+                active_jobs = [job for job in jobs_list if job.get("status") not in {"success", "failed"}]
+                finished_jobs = [job for job in jobs_list if job.get("status") in {"success", "failed"}]
+                jobs_list[:] = active_jobs + finished_jobs[:max(0, 40 - len(active_jobs))]
+            st.success(f"Tugas musik dibuat · Task ID `{task_id}`. Status akan diperiksa otomatis.")
+        except musicapi.KieMusicError as exc:
+            if exc.uncertain:
+                st.session_state["music_create_uncertain"] = True
+            st.error(f"Kie.ai: {exc}")
+        except ValueError as exc:
+            st.error(f"Periksa isian musik: {exc}")
+
+    with st.expander("Pulihkan / cek tugas dengan Task ID", expanded=False):
+        with st.form("music_recover_form"):
+            recovered_task_id = st.text_input("Task ID dari Kie.ai", key="music_recover_id")
+            recover_clicked = st.form_submit_button("Cek Task ID")
+        if recover_clicked:
+            if not musicapi.TASK_ID_RE.fullmatch(recovered_task_id.strip()):
+                st.error("Task ID tidak valid.")
+            elif not music_kie_key:
+                st.error("Masukkan API key Kie.ai yang sama dengan key pemilik tugas.")
+            else:
+                jobs_list = st.session_state.setdefault("music_studio_jobs", [])
+                if not any(job.get("id") == recovered_task_id.strip() for job in jobs_list):
+                    jobs_list.insert(0, {"id": recovered_task_id.strip(), "title": "Tugas " + recovered_task_id.strip()[:16],
+                                         "model": "Kie.ai", "instrumental": None, "created_at": time.time(),
+                                         "status": "waiting", "message": "Memulihkan status tugas.", "progress": None,
+                                         "tracks": [], "next_poll_at": 0, "poll_failures": 0})
+                st.success("Task ID ditambahkan ke pemantauan sesi ini.")
+
+    def _merge_music_tracks(existing: list[dict], incoming: list[dict]) -> list[dict]:
+        merged = list(existing)
+        for track in incoming:
+            match = next((item for item in merged if (track.get("id") and item.get("id") == track.get("id"))
+                          or (track.get("audio") and track.get("audio") in {item.get("audio"), item.get("stream")})
+                          or (track.get("stream") and track.get("stream") in {item.get("audio"), item.get("stream")})), None)
+            if match is None:
+                merged.append(dict(track))
+            else:
+                for field in ("id", "audio", "stream", "image", "title", "duration"):
+                    if not match.get(field) and track.get(field):
+                        match[field] = track[field]
+        return merged[:20]
+
+    def _poll_music_job(job: dict, api_key: str, force: bool = False) -> None:
+        now = time.time()
+        if not force and now < float(job.get("next_poll_at", 0)):
+            return
+        if not api_key:
+            job.update(status="paused", message="Masukkan kembali API key Kie.ai yang sama untuk memeriksa tugas.")
+            return
+        job["next_poll_at"] = now + 12
+        try:
+            payload = musicapi.get_task(api_key, job["id"])
+            result = musicapi.normalize_task(payload, api_key)
+            job["tracks"] = _merge_music_tracks(job.get("tracks", []), result["tracks"])
+            job["status"] = result["status"]
+            job["message"] = result["message"]
+            job["progress"] = result["progress"]
+            job["poll_failures"] = 0
+            if job["status"] == "success" and not job["tracks"]:
+                job["status"] = "waiting"
+                job["message"] = "Kie.ai menyatakan selesai, tautan audio belum tersedia. Status akan dicek lagi."
+        except musicapi.KieMusicError as exc:
+            failures = int(job.get("poll_failures", 0)) + 1
+            job["poll_failures"] = failures
+            if exc.status in {401, 402, 403, 404, 410, 422, 455} or failures >= 5:
+                job.update(status="paused", message=str(exc))
+            else:
+                job.update(status="waiting", message=f"Pengecekan terganggu; akan dicoba lagi. {exc}")
+                job["next_poll_at"] = now + min(60, 5 * (2 ** (failures - 1)))
+        if now - float(job.get("created_at", now)) > 30 * 60 and job.get("status") in {"waiting", "generating"}:
+            job.update(status="paused", message="Pemantauan otomatis dijeda setelah 30 menit. Tekan Cek status untuk melanjutkan.")
+
+    @st.fragment(run_every=10)
+    def music_jobs_panel():
+        jobs_list = st.session_state.setdefault("music_studio_jobs", [])
+        if not jobs_list:
+            st.info("Belum ada lagu dibuat di sesi ini. Isian musik dapat dipakai manual atau dibuat dari draf Ollama Cloud.")
+            return
+        st.caption("Task ID dan tautan hasil hanya tersimpan di sesi browser Streamlit ini. Unduh hasil yang disukai; URL provider dapat kedaluwarsa.")
+        for index, job in enumerate(list(jobs_list)):
+            if job.get("status") in {"waiting", "generating"}:
+                _poll_music_job(job, music_kie_key)
+            with st.container(border=True):
+                head = st.columns([3, 1])
+                head[0].markdown(f"**{job.get('title') or 'Musik'}** · `{job.get('model') or 'Kie.ai'}`")
+                head[1].markdown(f"**{job.get('status', 'waiting').upper()}**")
+                st.caption(f"Task ID: `{job.get('id')}` · {time.strftime('%Y-%m-%d %H:%M', time.localtime(job.get('created_at', time.time())))}")
+                st.write(job.get("message", ""))
+                if job.get("progress") is not None:
+                    st.progress(min(100, max(0, int(job["progress"]))) / 100)
+                if st.button("🔄 Cek status", key=f"music_check_{index}_{job.get('id')}"):
+                    _poll_music_job(job, music_kie_key, force=True)
+                if job.get("tracks"):
+                    for track_index, track in enumerate(job["tracks"]):
+                        with st.expander(f"▶️ {track.get('title') or f'Variasi {track_index + 1}'}"):
+                            audio_url = track.get("audio") or track.get("stream")
+                            if audio_url:
+                                st.audio(audio_url)
+                                st.link_button("⬇️ Buka / unduh audio", audio_url)
+                            if track.get("image"):
+                                st.image(track["image"], width=160)
+                            if track.get("duration"):
+                                st.caption(f"Durasi: {track['duration']:.0f} detik")
+
+    music_jobs_panel()
 
 # ───────────── JOB ─────────────
 with tab_jobs:
