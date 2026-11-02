@@ -18,6 +18,7 @@ import uploader
 import ytauth
 import ollama_cloud
 import music_studio as musicapi
+import viz_editor
 
 st.set_page_config(page_title="Studio Render, Live & Musik", page_icon="📡", layout="wide")
 
@@ -136,8 +137,8 @@ with st.sidebar:
 
 st.title("Studio Render, Live & Musik")
 
-tab_lib, tab_imp, tab_shorts, tab_norm, tab_live, tab_music, tab_jobs = st.tabs(
-    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "🎼 Musik AI", "⚙️ Job"])
+tab_lib, tab_imp, tab_shorts, tab_viz, tab_norm, tab_live, tab_music, tab_jobs = st.tabs(
+    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🎛️ VIZ Editor", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "🎼 Musik AI", "⚙️ Job"])
 
 # ───────────── LIBRARY ─────────────
 with tab_lib:
@@ -642,6 +643,134 @@ with tab_shorts:
                     st.success(f"Ollama + upload diantrekan · Job `{job['id']}`")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Gagal mengantrekan Ollama + upload: {exc}")
+
+# ───────────── VIZ EDITOR ─────────────
+with tab_viz:
+    st.caption("Susun video musik dari bahan Library: pilih satu audio dan background video/gambar, atur visualizer serta teks, lalu render MP4 ke Library → Hasil.")
+    audio_library = [p for p in svc.list_paths("audio") if p.suffix.lower() in svc.AUDIO_EXTS]
+    background_library = list(dict.fromkeys([
+        *[p for p in svc.list_paths("video") if p.suffix.lower() in svc.VIDEO_EXTS],
+        *[p for p in svc.list_paths("output") if p.suffix.lower() in svc.VIDEO_EXTS],
+        *[p for p in svc.list_paths("thumb") if p.suffix.lower() in svc.IMAGE_EXTS],
+    ]))
+    source_col, bg_col = st.columns(2)
+    selected_viz_audio = source_col.selectbox(
+        "🎵 Audio dari Library", audio_library, index=None, format_func=svc.label,
+        placeholder="Pilih lagu dari Library → Audio", key="viz_audio_source",
+    )
+    selected_viz_bg = bg_col.selectbox(
+        "🖼️ Background dari Library", background_library, index=None, format_func=svc.label,
+        placeholder="Pilih video/gambar dari Library", key="viz_background_source",
+    )
+    if not audio_library:
+        st.info("Library → Audio masih kosong. Impor lagu terlebih dahulu; VIZ hanya memakai bahan dari Library.")
+    if not background_library:
+        st.info("Belum ada background. Tambahkan video ke Library → Video atau gambar ke Library → Thumbnail.")
+
+    editor_col, preview_col = st.columns([1, 1.35])
+    with editor_col:
+        st.markdown("#### 🎚️ Visualizer")
+        viz_control_cols = st.columns(2)
+        aspect_label = viz_control_cols[0].selectbox("Format video", list(viz_editor.ASPECTS), key="viz_aspect")
+        viz_mode_label = viz_control_cols[1].selectbox("Visualisasi audio", list(viz_editor.VISUALIZER_MODES), key="viz_mode")
+        viz_pos = viz_control_cols[0].selectbox("Posisi visualizer", ["Atas", "Tengah", "Bawah"], index=2, key="viz_position")
+        viz_size = viz_control_cols[1].slider("Ukuran visualizer", 8, 40, 18, key="viz_size", format="%d%%")
+        color_cols = st.columns(2)
+        viz_color_a = color_cols[0].color_picker("Warna A", "#12e6ca", key="viz_color_a")
+        viz_color_b = color_cols[1].color_picker("Warna B", "#ff3cac", key="viz_color_b")
+        bg_effect = st.selectbox("Efek background", ["Normal", "Warm", "Cool", "Mono", "Dream", "Gelap"], key="viz_bg_effect")
+
+        st.markdown("#### ✍️ Teks")
+        viz_title = st.text_input("Judul / teks utama", max_chars=180, key="viz_title", placeholder="Contoh: Cozy Vlog Vibes")
+        viz_subtitle = st.text_input("Teks tambahan (opsional)", max_chars=240, key="viz_subtitle", placeholder="Nama channel, artis, atau keterangan")
+        text_cols = st.columns(2)
+        text_color = text_cols[0].color_picker("Warna teks", "#ffffff", key="viz_text_color")
+        text_size = text_cols[1].slider("Ukuran teks", 24, 120, 64, key="viz_text_size")
+        text_position = text_cols[0].selectbox("Posisi teks", ["Atas", "Tengah", "Bawah"], index=1, key="viz_text_position")
+        text_effect = text_cols[1].selectbox("Efek teks", ["Normal", "Bayangan", "Glow", "Outline", "Emboss"], index=1, key="viz_text_effect")
+        font_cols = st.columns(2)
+        font_family = font_cols[0].selectbox("Font", ["DejaVu Sans", "DejaVu Sans Mono", "Sans", "Serif", "Monospace"], key="viz_font")
+        text_opacity = font_cols[1].slider("Opacity teks", 10, 100, 100, key="viz_text_opacity", format="%d%%") / 100
+        text_animation = st.selectbox("Animasi judul", ["Tanpa animasi", "Fade", "Slide", "Denyut"], key="viz_text_animation")
+
+        default_output_name = svc.safe_name(f"{selected_viz_audio.stem if selected_viz_audio else 'video'}_VIZ.mp4")
+        output_name = st.text_input("Nama file hasil", value=default_output_name,
+                                    key=f"viz_output_name_{selected_viz_audio.stem if selected_viz_audio else 'new'}")
+        can_render_viz = bool(selected_viz_audio and selected_viz_bg and audio_library and background_library)
+        if st.button("⏺️ Render video MP4", type="primary", disabled=not can_render_viz, key="viz_render_button", width="stretch"):
+            try:
+                clean_name = svc.safe_name(output_name.strip() or default_output_name)
+                if Path(clean_name).suffix.lower() != ".mp4":
+                    clean_name = f"{Path(clean_name).stem}.mp4"
+                output_dir = svc.DIRS["output"]
+                output_stem, output_suffix = Path(clean_name).stem, Path(clean_name).suffix
+                reserved_outputs = {
+                    str(row.get("title", ""))[len("VIZ · "):]
+                    for row in jobs.jobs if row.get("status") in {"antre", "berjalan"}
+                    and str(row.get("title", "")).startswith("VIZ · ")
+                }
+                output_path = output_dir / clean_name
+                suffix_index = 1
+                while output_path.exists() or output_path.name in reserved_outputs:
+                    output_path = output_dir / f"{output_stem}_{suffix_index}{output_suffix}"
+                    suffix_index += 1
+                options = {
+                    "aspect": aspect_label,
+                    "visualizer": viz_editor.VISUALIZER_MODES[viz_mode_label],
+                    "visualizer_position": viz_pos,
+                    "visualizer_size": viz_size,
+                    "color_a": viz_color_a,
+                    "color_b": viz_color_b,
+                    "background_effect": bg_effect,
+                    "title": viz_title.strip(),
+                    "subtitle": viz_subtitle.strip(),
+                    "text_color": text_color,
+                    "font_size": text_size,
+                    "text_position": text_position,
+                    "text_effect": text_effect,
+                    "font": font_family,
+                    "text_opacity": text_opacity,
+                    "text_animation": text_animation,
+                }
+                job = jobs.submit(
+                    f"VIZ · {output_path.name}",
+                    partial(viz_editor.render_visualizer, audio_path=selected_viz_audio,
+                            background_path=selected_viz_bg, output_path=output_path,
+                            options=options, disk_min_gb=float(disk_min)),
+                )
+                st.success(f"Render masuk antrean · Job `{job['id']}`. File sumber tetap aman; hasil akan muncul di Library → Hasil.")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Tidak dapat mengantrekan render VIZ: {exc}")
+
+    with preview_col:
+        st.markdown("#### 🖥️ Kanvas / bahan terpilih")
+        if selected_viz_bg:
+            if selected_viz_bg.suffix.lower() in svc.IMAGE_EXTS:
+                st.image(str(selected_viz_bg), width="stretch")
+            else:
+                st.video(str(selected_viz_bg))
+        else:
+            st.info("Pilih background dari Library untuk melihat bahan video.")
+        if selected_viz_audio:
+            st.caption(f"Audio: **{selected_viz_audio.name}**")
+            st.audio(str(selected_viz_audio))
+        st.caption("Preview ini menampilkan bahan sumber; komposisi final dengan teks dan visualizer dibuat saat render MP4.")
+
+    @st.fragment(run_every=3)
+    def viz_job_panel():
+        viz_rows = [row for row in jobs.snapshot() if str(row.get("Job", "")).startswith("VIZ · ")]
+        if viz_rows:
+            st.markdown("#### 📋 Status render")
+            jobs_table(viz_rows[:10])
+
+    viz_job_panel()
+    recent_viz_outputs = [p for p in reversed(svc.list_paths("output")) if p.suffix.lower() == ".mp4"][:6]
+    if recent_viz_outputs:
+        with st.expander("🎞️ Hasil VIZ di Library → Hasil", expanded=False):
+            viz_output = st.selectbox("Pilih hasil untuk preview", recent_viz_outputs,
+                                      format_func=lambda p: p.name, key="viz_output_preview")
+            if viz_output and viz_output.stat().st_size < 300 * 1024 * 1024:
+                st.video(str(viz_output))
 
 # ───────────── NORMALISASI & TES ─────────────
 LMODE = {"two": "Presisi (2-pass, disarankan)", "one": "Cepat (1-pass)",
