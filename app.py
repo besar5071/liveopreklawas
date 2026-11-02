@@ -1250,6 +1250,9 @@ with tab_live:
 
 # ───────────── MUSIC STUDIO ─────────────
 with tab_music:
+    saved_music_notice = st.session_state.pop("music_saved_notice", None)
+    if saved_music_notice:
+        st.success(saved_music_notice)
     st.caption("Susun lirik dari ide dengan Ollama Cloud, lalu buat lagu yang bisa diputar dan diunduh melalui Kie.ai. "
                "Fitur ini mengikuti alur pada file referensi; bagian tilawah dari file tersebut tidak dimasukkan ke aplikasi.")
     kie_cfg = _secret_section("kie")
@@ -1484,7 +1487,38 @@ with tab_music:
                             audio_url = track.get("audio") or track.get("stream")
                             if audio_url:
                                 st.audio(audio_url)
-                                st.link_button("⬇️ Buka / unduh audio", audio_url)
+                                download_col, library_col = st.columns(2)
+                                file_title = track.get("title") or job.get("title") or "Musik"
+                                base_filename = svc.safe_name(f"{file_title} - versi {track_index + 1}")
+                                if download_col.button("⬇️ Siapkan file unduhan", key=f"music_prepare_download_{job.get('id')}_{track_index}"):
+                                    try:
+                                        with st.spinner("Mengunduh hasil dari Kie.ai untuk disiapkan..."):
+                                            audio_data, audio_mime, audio_ext = musicapi.download_audio(audio_url)
+                                        st.download_button(
+                                            "⬇️ Unduh file audio",
+                                            data=audio_data,
+                                            file_name=f"{base_filename}.{audio_ext}",
+                                            mime=audio_mime,
+                                            key=f"music_download_file_{job.get('id')}_{track_index}",
+                                            on_click="ignore",
+                                        )
+                                        st.caption("Klik tombol di atas untuk menyimpan file ke perangkat. Batas unduh 150 MB.")
+                                    except musicapi.KieMusicError as exc:
+                                        st.error(f"Unduhan gagal: {exc}")
+                                if library_col.button("💾 Simpan ke Library", key=f"music_save_library_{job.get('id')}_{track_index}"):
+                                    try:
+                                        with st.spinner("Mengunduh hasil lalu menyimpannya ke Library..."):
+                                            audio_data, _audio_mime, audio_ext = musicapi.download_audio(audio_url)
+                                        library_name = svc.safe_name(f"{base_filename}.{audio_ext}")
+                                        library_path = svc.unique_path(svc.DIRS["audio"], library_name)
+                                        library_path.write_bytes(audio_data)
+                                        st.session_state["music_saved_notice"] = f"Audio disimpan ke Library → Audio: {library_path.name}"
+                                        st.rerun(scope="app")
+                                    except musicapi.KieMusicError as exc:
+                                        st.error(f"Penyimpanan ke Library gagal: {exc}")
+                                    except OSError as exc:
+                                        st.error(f"Tidak dapat menyimpan file ke Library: {exc}")
+                                st.link_button("🔗 Buka audio sumber", audio_url)
                             if track.get("image"):
                                 st.image(track["image"], width=160)
                             if track.get("duration"):
