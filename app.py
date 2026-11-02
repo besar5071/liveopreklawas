@@ -22,6 +22,8 @@ import viz_editor
 
 st.set_page_config(page_title="Studio Render, Live & Musik", page_icon="📡", layout="wide")
 
+import viz_canvas
+
 
 KIND_LABEL = {"video": "🎞️ Video", "audio": "🎵 Audio", "output": "📦 Hasil",
               "thumb": "🖼️ Thumbnail", "other": "🗂️ Lainnya"}
@@ -53,6 +55,11 @@ MUSIC_MOODS = [
 @st.cache_data(ttl=15, show_spinner=False)
 def _disk_info() -> dict:
     return svc.disk_info()
+
+
+@st.cache_data(ttl=3600, max_entries=12, show_spinner=False)
+def _viz_preview_data(path: str, mtime_ns: int, size: int) -> str:
+    return viz_editor.preview_background_data_url(path)
 
 
 @st.cache_resource
@@ -647,6 +654,9 @@ with tab_shorts:
 # ───────────── VIZ EDITOR ─────────────
 with tab_viz:
     st.caption("Susun video musik dari bahan Library: pilih satu audio dan background video/gambar, atur visualizer serta teks, lalu render MP4 ke Library → Hasil.")
+    default_viz_layer_positions = {
+        "title": {"x": 50, "y": 48}, "subtitle": {"x": 50, "y": 66}, "visualizer": {"x": 50, "y": 84},
+    }
     audio_library = [p for p in svc.list_paths("audio") if p.suffix.lower() in svc.AUDIO_EXTS]
     background_library = list(dict.fromkeys([
         *[p for p in svc.list_paths("video") if p.suffix.lower() in svc.VIDEO_EXTS],
@@ -673,8 +683,7 @@ with tab_viz:
         viz_control_cols = st.columns(2)
         aspect_label = viz_control_cols[0].selectbox("Format video", list(viz_editor.ASPECTS), key="viz_aspect")
         viz_mode_label = viz_control_cols[1].selectbox("Visualisasi audio", list(viz_editor.VISUALIZER_MODES), key="viz_mode")
-        viz_pos = viz_control_cols[0].selectbox("Posisi visualizer", ["Atas", "Tengah", "Bawah"], index=2, key="viz_position")
-        viz_size = viz_control_cols[1].slider("Ukuran visualizer", 8, 40, 18, key="viz_size", format="%d%%")
+        viz_size = st.slider("Ukuran visualizer", 8, 40, 18, key="viz_size", format="%d%%")
         color_cols = st.columns(2)
         viz_color_a = color_cols[0].color_picker("Warna A", "#12e6ca", key="viz_color_a")
         viz_color_b = color_cols[1].color_picker("Warna B", "#ff3cac", key="viz_color_b")
@@ -686,7 +695,6 @@ with tab_viz:
         text_cols = st.columns(2)
         text_color = text_cols[0].color_picker("Warna teks", "#ffffff", key="viz_text_color")
         text_size = text_cols[1].slider("Ukuran teks", 24, 120, 64, key="viz_text_size")
-        text_position = text_cols[0].selectbox("Posisi teks", ["Atas", "Tengah", "Bawah"], index=1, key="viz_text_position")
         text_effect = text_cols[1].selectbox("Efek teks", ["Normal", "Bayangan", "Glow", "Outline", "Emboss"], index=1, key="viz_text_effect")
         font_cols = st.columns(2)
         font_family = font_cols[0].selectbox("Font", ["DejaVu Sans", "DejaVu Sans Mono", "Sans", "Serif", "Monospace"], key="viz_font")
@@ -714,10 +722,13 @@ with tab_viz:
                 while output_path.exists() or output_path.name in reserved_outputs:
                     output_path = output_dir / f"{output_stem}_{suffix_index}{output_suffix}"
                     suffix_index += 1
+                layer_positions = st.session_state.get("viz_layer_positions", default_viz_layer_positions)
                 options = {
                     "aspect": aspect_label,
                     "visualizer": viz_editor.VISUALIZER_MODES[viz_mode_label],
-                    "visualizer_position": viz_pos,
+                    "visualizer_position": "Bawah",
+                    "visualizer_x_pct": layer_positions.get("visualizer", {}).get("x", 50),
+                    "visualizer_y_pct": layer_positions.get("visualizer", {}).get("y", 84),
                     "visualizer_size": viz_size,
                     "color_a": viz_color_a,
                     "color_b": viz_color_b,
@@ -726,7 +737,11 @@ with tab_viz:
                     "subtitle": viz_subtitle.strip(),
                     "text_color": text_color,
                     "font_size": text_size,
-                    "text_position": text_position,
+                    "title_x_pct": layer_positions.get("title", {}).get("x", 50),
+                    "title_y_pct": layer_positions.get("title", {}).get("y", 48),
+                    "subtitle_x_pct": layer_positions.get("subtitle", {}).get("x", 50),
+                    "subtitle_y_pct": layer_positions.get("subtitle", {}).get("y", 66),
+                    "text_position": "Tengah",
                     "text_effect": text_effect,
                     "font": font_family,
                     "text_opacity": text_opacity,
@@ -743,18 +758,41 @@ with tab_viz:
                 st.error(f"Tidak dapat mengantrekan render VIZ: {exc}")
 
     with preview_col:
-        st.markdown("#### 🖥️ Kanvas / bahan terpilih")
+        st.markdown("#### 🖥️ Preview — geser objek")
+        preview_data = ""
         if selected_viz_bg:
-            if selected_viz_bg.suffix.lower() in svc.IMAGE_EXTS:
-                st.image(str(selected_viz_bg), width="stretch")
-            else:
-                st.video(str(selected_viz_bg))
-        else:
-            st.info("Pilih background dari Library untuk melihat bahan video.")
+            bg_stat = selected_viz_bg.stat()
+            preview_data = _viz_preview_data(str(selected_viz_bg), bg_stat.st_mtime_ns, bg_stat.st_size)
+            if not preview_data:
+                st.warning("Preview background tidak tersedia; objek tetap dapat diatur pada kanvas kosong.")
+        if st.button("↺ Reset posisi objek", key="viz_reset_positions"):
+            st.session_state["viz_layer_positions"] = default_viz_layer_positions
+            st.session_state["viz_drag_canvas"] = None
+        current_positions = st.session_state.get("viz_layer_positions", default_viz_layer_positions)
+        drag_result = viz_canvas.viz_canvas(
+            background_data=preview_data, aspect=aspect_label, title=viz_title.strip(),
+            subtitle=viz_subtitle.strip(), visualizer=viz_editor.VISUALIZER_MODES[viz_mode_label],
+            color_a=viz_color_a, color_b=viz_color_b, positions=current_positions,
+            text_color=text_color, font_size=text_size, font=font_family, text_effect=text_effect,
+            text_opacity=text_opacity, visualizer_size=viz_size, key="viz_drag_canvas",
+        )
+        if isinstance(drag_result, dict):
+            clean_positions = {}
+            for layer_name, fallback in default_viz_layer_positions.items():
+                value = drag_result.get(layer_name, {})
+                try:
+                    x_value = float(value.get("x", fallback["x"]))
+                    y_value = float(value.get("y", fallback["y"]))
+                except (AttributeError, TypeError, ValueError):
+                    x_value, y_value = fallback["x"], fallback["y"]
+                clean_positions[layer_name] = {
+                    "x": max(3.0, min(97.0, x_value)), "y": max(3.0, min(97.0, y_value)),
+                }
+            st.session_state["viz_layer_positions"] = clean_positions
+        st.caption("Seret judul, subjudul, dan visualizer untuk mengatur posisinya. Kanvas memakai gambar latar untuk video; ekspor mengikuti posisi yang dipilih.")
         if selected_viz_audio:
             st.caption(f"Audio: **{selected_viz_audio.name}**")
             st.audio(str(selected_viz_audio))
-        st.caption("Preview ini menampilkan bahan sumber; komposisi final dengan teks dan visualizer dibuat saat render MP4.")
 
     @st.fragment(run_every=3)
     def viz_job_panel():
