@@ -1314,12 +1314,16 @@ with tab_music:
         st.session_state.setdefault("music_ollama_model", str(ollama_cfg.get("model") or "gpt-oss:20b"))
         music_ollama_model = st.text_input("Model draf lagu", key="music_ollama_model")
 
+    def _kie_key_fingerprint(api_key: str) -> str:
+        """Stable, non-reversible key identifier, independent of provider-module version."""
+        return hashlib.sha256(str(api_key or "").strip().encode("utf-8")).hexdigest()[:20]
+
     def _refresh_kie_credit(api_keys: list[str], force: bool = False,
                             only_fingerprints: set[str] | None = None) -> dict:
         cached = dict(st.session_state.get("music_kie_credit_states", {}))
         now = time.time()
         for api_key in api_keys:
-            fingerprint = musicapi.key_fingerprint(api_key)
+            fingerprint = _kie_key_fingerprint(api_key)
             if only_fingerprints is not None and fingerprint not in only_fingerprints:
                 continue
             previous = cached.get(fingerprint, {})
@@ -1343,8 +1347,8 @@ with tab_music:
                                        disabled=not music_kie_keys)
     if music_kie_keys:
         cached_credit = _refresh_kie_credit(music_kie_keys, force=refresh_credit_clicked)
-        credit_rows = [(index, musicapi.key_fingerprint(api_key),
-                        cached_credit.get(musicapi.key_fingerprint(api_key), {}))
+        credit_rows = [(index, _kie_key_fingerprint(api_key),
+                        cached_credit.get(_kie_key_fingerprint(api_key), {}))
                        for index, api_key in enumerate(music_kie_keys, start=1)]
         known_balances = [float(row[2]["balance"]) for row in credit_rows if row[2].get("balance") is not None]
         total_credit = sum(known_balances)
@@ -1541,7 +1545,7 @@ with tab_music:
             return
         stored_fingerprint = job.get("key_fingerprint")
         candidates = [(index, key) for index, key in enumerate(api_keys, start=1)
-                      if not stored_fingerprint or musicapi.key_fingerprint(key) == stored_fingerprint]
+                      if not stored_fingerprint or _kie_key_fingerprint(key) == stored_fingerprint]
         if not candidates:
             job.update(status="paused", message="API key pembuat tugas ini tidak tersedia pada sesi. Tambahkan kembali key yang sama untuk melanjutkan pemeriksaan.")
             return
@@ -1554,7 +1558,7 @@ with tab_music:
                 try:
                     payload = musicapi.get_task(candidate_key, job["id"])
                     used_api_key = candidate_key
-                    job["key_fingerprint"] = musicapi.key_fingerprint(candidate_key)
+                    job["key_fingerprint"] = _kie_key_fingerprint(candidate_key)
                     job["key_index"] = key_index
                     break
                 except musicapi.KieMusicError as exc:
