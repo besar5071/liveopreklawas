@@ -18,6 +18,19 @@ class FakeResponse:
         return self.payload
 
 
+class FakeAudioResponse:
+    status_code = 200
+    ok = True
+    headers = {"Content-Type": "audio/mpeg", "Content-Length": "4"}
+
+    def iter_content(self, chunk_size):
+        yield b"audi"
+        yield b""
+
+    def close(self):
+        pass
+
+
 class MusicStudioTests(unittest.TestCase):
     def test_create_task_returns_validated_id_and_uses_bearer_auth(self):
         response = FakeResponse({"code": 200, "data": {"taskId": "task_123"}})
@@ -37,6 +50,18 @@ class MusicStudioTests(unittest.TestCase):
                 music_studio.create_task("secret-key", {"model": "ai-music-api/generate", "input": {}})
         self.assertTrue(caught.exception.uncertain)
         self.assertNotIn("secret-key", str(caught.exception))
+
+    def test_download_audio_checks_https_and_returns_mime_and_extension(self):
+        with patch.object(requests, "get", return_value=FakeAudioResponse()) as get:
+            audio, mime, extension = music_studio.download_audio("https://cdn.example/song.mp3")
+        self.assertEqual(audio, b"audi")
+        self.assertEqual(mime, "audio/mpeg")
+        self.assertEqual(extension, "mp3")
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+        with patch.object(requests, "get") as get:
+            with self.assertRaises(music_studio.KieMusicError):
+                music_studio.download_audio("http://127.0.0.1/private.mp3")
+            get.assert_not_called()
 
     def test_extract_tracks_sanitizes_urls_and_deduplicates(self):
         tracks = music_studio.extract_tracks({"data": {"state": "success", "response": json.dumps({

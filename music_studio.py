@@ -1,10 +1,12 @@
 """Kie.ai music-generation API helpers used by the Streamlit Music Studio."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -102,6 +104,89 @@ def get_task(api_key: str, task_id: str) -> dict:
     if not isinstance(task_id, str) or not TASK_ID_RE.fullmatch(task_id):
         raise KieMusicError("Task ID tidak valid.")
     return _api_request(api_key, "GET", "/recordInfo", params={"taskId": task_id}, timeout=25)
+
+
+def _public_download_url(value: str) -> str:
+    url = _https_url(value)
+    if not url:
+        raise KieMusicError("URL audio bukan HTTPS yang valid.")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".test")):
+        raise KieMusicError("Host URL audio tidak diizinkan.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise KieMusicError("Port URL audio tidak valid.") from exc
+    if port not in (None, 443):
+        raise KieMusicError("Port URL audio tidak diizinkan.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise KieMusicError("URL audio mengarah ke alamat jaringan privat.")
+    return url
+
+
+def download_audio(url: str, max_bytes: int = 150 * 1024 * 1024) -> tuple[bytes, str, str]:
+    """Fetch one generated audio file safely; returns bytes, MIME type, and extension."""
+    current_url = _public_download_url(url)
+    response = None
+    for redirect_count in range(6):
+        try:
+            response = requests.get(current_url, timeout=(10, 60), stream=True, allow_redirects=False)
+        except requests.RequestException as exc:
+            raise KieMusicError("Gagal mengunduh audio dari penyedia. Coba lagi.") from exc
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("Location")
+            response.close()
+            response = None
+            if not location or redirect_count >= 5:
+                raise KieMusicError("Tautan unduhan terlalu banyak mengalihkan atau tidak valid.")
+            current_url = _public_download_url(urljoin(current_url, location))
+            continue
+        break
+    try:
+        if response is None or not response.ok:
+            status = response.status_code if response is not None else 0
+            raise KieMusicError(f"Penyedia menolak unduhan audio (HTTP {status}).", status)
+        content_type = str(response.headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
+        if content_type == "text/html" or not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
+            raise KieMusicError("Tautan tidak mengembalikan file audio yang dapat diunduh.")
+        try:
+            announced_size = int(response.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            announced_size = 0
+        if announced_size > max_bytes:
+            raise KieMusicError("File audio melebihi batas unduh 150 MB.")
+        chunks = []
+        size = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > max_bytes:
+                raise KieMusicError("File audio melebihi batas unduh 150 MB.")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        if not data:
+            raise KieMusicError("File audio kosong.")
+        extension_by_type = {
+            "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/aac": "aac",
+            "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg", "audio/flac": "flac",
+            "audio/x-flac": "flac", "audio/opus": "opus", "audio/aiff": "aiff", "audio/x-aiff": "aiff",
+        }
+        extension = extension_by_type.get(content_type, "")
+        if not extension:
+            path_suffix = Path(urlparse(current_url).path).suffix.lower().lstrip(".")
+            extension = path_suffix if path_suffix in {"mp3", "m4a", "aac", "wav", "ogg", "flac", "opus", "aiff"} else "mp3"
+        return data, content_type, extension
+    except requests.RequestException as exc:
+        raise KieMusicError("Unduhan audio terputus. Coba lagi.") from exc
+    finally:
+        if response is not None:
+            response.close()
 
 
 def _clean_track(item: dict) -> dict | None:
