@@ -32,6 +32,22 @@ class FakeAudioResponse:
 
 
 class MusicStudioTests(unittest.TestCase):
+    def test_credit_balance_reads_numeric_credit_from_provider(self):
+        response = FakeResponse({"code": 200, "data": 1234.5})
+        with patch.object(requests, "get", return_value=response) as get:
+            balance = music_studio.get_credit_balance("credit-key")
+        self.assertEqual(balance, 1234.5)
+        self.assertEqual(get.call_args.args[0], music_studio.CREDIT_URL)
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer credit-key")
+
+    def test_credit_balance_accepts_named_balance_and_hides_auth_errors(self):
+        with patch.object(requests, "get", return_value=FakeResponse({"code": 200, "data": {"balance": "80"}})):
+            self.assertEqual(music_studio.get_credit_balance("credit-key"), 80.0)
+        with patch.object(requests, "get", return_value=FakeResponse({"code": 401, "msg": "credit-key unauthorized"}, 401)):
+            with self.assertRaises(music_studio.KieMusicError) as caught:
+                music_studio.get_credit_balance("credit-key")
+        self.assertNotIn("credit-key", str(caught.exception))
+
     def test_create_task_returns_validated_id_and_uses_bearer_auth(self):
         response = FakeResponse({"code": 200, "data": {"taskId": "task_123"}})
         with patch.object(requests, "request", return_value=response) as request:
