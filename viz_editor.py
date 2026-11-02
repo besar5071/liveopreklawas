@@ -1,6 +1,8 @@
 """Library-based music visualizer video renderer."""
 from __future__ import annotations
 
+import base64
+import io
 import os
 import re
 import shutil
@@ -43,6 +45,45 @@ def validate_library_assets(audio_path: str | Path, background_path: str | Path,
     if not _inside(output, (OUTPUT_DIR,)) or output.suffix.lower() != ".mp4":
         raise ValueError("File hasil harus berupa MP4 di Library → Hasil.")
     return audio, background, output
+
+
+def preview_background_data_url(background_path: str | Path) -> str:
+    """Create a compact JPEG data URL preview from a Library image or video poster frame."""
+    background = Path(background_path).resolve()
+    if not _inside(background, (VIDEO_DIR, OUTPUT_DIR, IMAGE_DIR)) or not background.is_file():
+        return ""
+    try:
+        from PIL import Image
+        if background.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+            image = Image.open(background)
+        else:
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                return ""
+            result = subprocess.run(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", "0", "-i", str(background),
+                 "-an", "-frames:v", "1", "-vf", "scale=1280:720:force_original_aspect_ratio=decrease",
+                 "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                capture_output=True, timeout=20,
+            )
+            if result.returncode != 0 or not result.stdout:
+                return ""
+            image = Image.open(io.BytesIO(result.stdout))
+        image.seek(0)
+        if image.mode in {"RGBA", "LA"}:
+            rgba = image.convert("RGBA")
+            base = Image.new("RGB", rgba.size, (10, 12, 16))
+            base.paste(rgba, mask=rgba.getchannel("A"))
+            image = base
+        else:
+            image = image.convert("RGB")
+        image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=78, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _hex_color(value: str, fallback: str = "#12e6ca") -> str:
@@ -103,10 +144,14 @@ def build_ffmpeg_command(audio_path: str | Path, background_path: str | Path,
             viz_source = (f"showfreqs=s={viz_width}x{viz_height}:mode=bar:cmode=combined:"
                           f"ascale=log:fscale=log:win_size=2048:rate=30:colors={color_a}|{color_b}")
         pos = str(opts.get("visualizer_position", "Bawah"))
-        y_expr = "24" if pos == "Atas" else "(H-h)/2" if pos == "Tengah" else "H-h-30"
+        default_viz_y = {"Atas": 12, "Tengah": 50, "Bawah": 84}.get(pos, 84)
+        viz_x_pct = max(0.0, min(100.0, float(opts.get("visualizer_x_pct", 50))))
+        viz_y_pct = max(0.0, min(100.0, float(opts.get("visualizer_y_pct", default_viz_y))))
+        x_expr = f"'max(0,min(W-w,W*{viz_x_pct / 100:.4f}-w/2))'"
+        y_expr = f"'max(0,min(H-h,H*{viz_y_pct / 100:.4f}-h/2))'"
         filters.append(
             f"[0:a]{viz_source},format=rgba,colorkey=black:0.12:0.08[viz];"
-            f"[base][viz]overlay=(W-w)/2:{y_expr}:shortest=1[with_viz]"
+            f"[base][viz]overlay=x={x_expr}:y={y_expr}:shortest=1[with_viz]"
         )
         current = "with_viz"
 
@@ -115,20 +160,24 @@ def build_ffmpeg_command(audio_path: str | Path, background_path: str | Path,
     text_color = _hex_color(opts.get("text_color", "#ffffff"))
     font_size = max(16, min(160, int(opts.get("font_size", 64))))
     text_position = str(opts.get("text_position", "Tengah"))
-    y_expr = "h*0.12" if text_position == "Atas" else "(h-text_h)/2" if text_position == "Tengah" else "h*0.76"
+    default_title_y = {"Atas": 12, "Tengah": 48, "Bawah": 76}.get(text_position, 48)
+    title_x_pct = max(0.0, min(100.0, float(opts.get("title_x_pct", 50))))
+    title_y_pct = max(0.0, min(100.0, float(opts.get("title_y_pct", default_title_y))))
+    title_x_target = f"'max(0,min(w-text_w,w*{title_x_pct / 100:.4f}-text_w/2))'"
+    title_y_expr = f"'max(0,min(h-text_h,h*{title_y_pct / 100:.4f}-text_h/2))'"
     effect = str(opts.get("text_effect", "Bayangan"))
     animation = str(opts.get("text_animation", "Tanpa animasi"))
     font_name = str(opts.get("font", "DejaVu Sans"))
     if font_name not in {"Sans", "Serif", "Monospace", "DejaVu Sans", "DejaVu Sans Mono"}:
         font_name = "DejaVu Sans"
     text_opacity = max(0.1, min(1.0, float(opts.get("text_opacity", 1.0))))
-    title_x = "(w-text_w)/2"
+    title_x = title_x_target
     title_font_size = str(font_size)
     animation_style = ""
     if animation == "Fade":
         animation_style = ":alpha='min(1,t/1.2)'"
     elif animation == "Slide":
-        title_x = "'if(lt(t,1),-text_w+(w+text_w)*t,(w-text_w)/2)'"
+        title_x = f"'if(lt(t,1),-text_w+(w+text_w)*t,max(0,min(w-text_w,w*{title_x_pct / 100:.4f}-text_w/2)))'"
     elif animation == "Denyut":
         title_font_size = f"'{font_size}*(1+0.06*sin(2*PI*t))'"
     text_style = ""
@@ -145,17 +194,21 @@ def build_ffmpeg_command(audio_path: str | Path, background_path: str | Path,
     if title and title_file:
         filters.append(
             f"[{current}]drawtext=textfile='{_escape_filter_path(title_file)}':expansion=none:"
-            f"font='{font_name}':fontcolor={text_color}@{text_opacity:.2f}:fontsize={title_font_size}:x={title_x}:y={y_expr}:"
+            f"font='{font_name}':fontcolor={text_color}@{text_opacity:.2f}:fontsize={title_font_size}:x={title_x}:y={title_y_expr}:"
             f"box=1:boxcolor=black@0.22:boxborderw=14{text_style}{animation_style}[text{draw_count}]"
         )
         current = f"text{draw_count}"
         draw_count += 1
     if subtitle and subtitle_file:
-        sub_y = "h*0.84" if text_position != "Atas" else "h*0.22"
+        default_sub_y = 22 if text_position == "Atas" else 86
+        subtitle_x_pct = max(0.0, min(100.0, float(opts.get("subtitle_x_pct", 50))))
+        subtitle_y_pct = max(0.0, min(100.0, float(opts.get("subtitle_y_pct", default_sub_y))))
+        subtitle_x = f"'max(0,min(w-text_w,w*{subtitle_x_pct / 100:.4f}-text_w/2))'"
+        subtitle_y = f"'max(0,min(h-text_h,h*{subtitle_y_pct / 100:.4f}-text_h/2))'"
         filters.append(
             f"[{current}]drawtext=textfile='{_escape_filter_path(subtitle_file)}':expansion=none:"
             f"font='{font_name}':fontcolor=white@{text_opacity:.2f}:fontsize={max(14, font_size // 2)}:"
-            f"x=(w-text_w)/2:y={sub_y}:shadowcolor=black@0.8:shadowx=2:shadowy=2[text{draw_count}]"
+            f"x={subtitle_x}:y={subtitle_y}:shadowcolor=black@0.8:shadowx=2:shadowy=2[text{draw_count}]"
         )
         current = f"text{draw_count}"
         draw_count += 1

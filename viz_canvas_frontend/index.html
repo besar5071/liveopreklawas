@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: transparent; color: #e9eef7; font: 13px system-ui, sans-serif; overflow: hidden; }
+  #wrap { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  #canvas { position: relative; flex: none; overflow: hidden; border: 1px solid #45505d; border-radius: 12px; background-color: #080b10; background-position: center; background-size: cover; box-shadow: 0 8px 28px #0008; touch-action: none; }
+  #shade { position:absolute; inset:0; pointer-events:none; background:linear-gradient(180deg,#0003,transparent 25%,transparent 70%,#0005); }
+  .layer { position:absolute; transform:translate(-50%,-50%); cursor:grab; touch-action:none; user-select:none; outline:1px dashed transparent; border-radius:8px; }
+  .layer:hover, .layer.dragging { outline:1px dashed #12e6ca; cursor:grabbing; }
+  .label { position:absolute; top:-18px; left:0; padding:2px 6px; border-radius:4px; color:#071512; background:#12e6ca; font-size:10px; font-weight:700; white-space:nowrap; opacity:0; transition:opacity .15s; pointer-events:none; }
+  .layer:hover .label, .layer.dragging .label { opacity:1; }
+  #title { max-width:88%; padding:7px 12px; color:white; background:#0005; text-align:center; white-space:pre-wrap; overflow-wrap:anywhere; text-shadow:0 2px 5px #000; font-weight:750; }
+  #subtitle { max-width:88%; padding:4px 9px; color:white; text-align:center; white-space:pre-wrap; overflow-wrap:anywhere; text-shadow:0 2px 5px #000; }
+  #visualizer { width:88%; min-height:50px; display:flex; align-items:center; justify-content:center; gap:3px; padding:6px 10px; background:#0004; }
+  .bar { flex:1; min-width:2px; border-radius:8px 8px 2px 2px; background:linear-gradient(180deg,var(--b),var(--a)); animation:beat var(--dur) ease-in-out infinite alternate; animation-delay:var(--delay); }
+  @keyframes beat { from { transform:scaleY(.18); } to { transform:scaleY(1); } }
+  #hint { color:#9aa6b2; font-size:11px; text-align:center; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="canvas"><div id="shade"></div></div>
+  <div id="hint">Geser judul, subjudul, atau visualizer langsung pada kanvas.</div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const wrap = document.getElementById('wrap');
+  const hint = document.getElementById('hint');
+  let args = {};
+  let positions = { title:{x:50,y:48}, subtitle:{x:50,y:62}, visualizer:{x:50,y:84} };
+  let drag = null;
+  const cleanColor = value => /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#12e6ca';
+  const bound = n => Math.max(3, Math.min(97, Number(n) || 50));
+  const streamlitMessage = (type, extra={}) => window.parent.postMessage({isStreamlitMessage:true,type,...extra}, '*');
+  const sendValue = value => streamlitMessage('streamlit:setComponentValue', {value, dataType:'json'});
+  function setHeight() {
+    const height = Math.ceil(wrap.getBoundingClientRect().height + 4);
+    streamlitMessage('streamlit:setFrameHeight', {height});
+  }
+  function addDraggable(id, text, className, style={}) {
+    const el = document.createElement('div');
+    el.id = id;
+    el.className = `layer ${className}`;
+    el.dataset.id = id;
+    const label = document.createElement('span');
+    label.className = 'label'; label.textContent = text;
+    el.appendChild(label);
+    Object.assign(el.style, style);
+    canvas.appendChild(el);
+    el.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const key = el.dataset.id;
+      drag = {key, startX:e.clientX, startY:e.clientY, x:positions[key].x, y:positions[key].y};
+      el.classList.add('dragging'); el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', e => {
+      if (!drag || drag.key !== el.dataset.id) return;
+      const rect = canvas.getBoundingClientRect();
+      positions[drag.key] = {x:bound(drag.x + (e.clientX-drag.startX)/rect.width*100),
+                             y:bound(drag.y + (e.clientY-drag.startY)/rect.height*100)};
+      place(el, positions[drag.key]);
+    });
+    el.addEventListener('pointerup', e => {
+      if (!drag || drag.key !== el.dataset.id) return;
+      el.classList.remove('dragging'); drag = null;
+      sendValue(positions); setHeight();
+    });
+    el.addEventListener('lostpointercapture', () => { if (drag && drag.key===el.dataset.id) { el.classList.remove('dragging'); drag=null; } });
+    place(el, positions[id]);
+    return el;
+  }
+  function place(el, p) { el.style.left = `${bound(p.x)}%`; el.style.top = `${bound(p.y)}%`; }
+  function render(next) {
+    args = next || {};
+    const incoming = args.positions || {};
+    positions = {
+      title:{x:bound(incoming.title?.x ?? 50), y:bound(incoming.title?.y ?? 48)},
+      subtitle:{x:bound(incoming.subtitle?.x ?? 50), y:bound(incoming.subtitle?.y ?? 65)},
+      visualizer:{x:bound(incoming.visualizer?.x ?? 50), y:bound(incoming.visualizer?.y ?? 84)},
+    };
+    canvas.innerHTML = '<div id="shade"></div>';
+    const ratio = String(args.aspect || '').startsWith('9:16') ? [9,16] : String(args.aspect || '').startsWith('1:1') ? [1,1] : [16,9];
+    const maxHeight = Math.min(540, Math.max(300, window.innerHeight * .68));
+    const width = Math.min(Math.max(240, wrap.clientWidth), maxHeight * ratio[0] / ratio[1]);
+    canvas.style.width = `${Math.floor(width)}px`;
+    canvas.style.height = `${Math.floor(width * ratio[1] / ratio[0])}px`;
+    canvas.style.backgroundImage = args.background_data ? `url("${args.background_data}")` : 'linear-gradient(135deg,#101723,#040608)';
+    const title = String(args.title || 'Judul lagu');
+    const titleEl = addDraggable('title', 'JUDUL', 'title-layer', {
+      color:cleanColor(args.text_color || '#ffffff'), opacity:String(args.text_opacity ?? 1),
+      fontFamily:args.font || 'DejaVu Sans', fontSize:`${Math.max(14,Math.min(64,Number(args.font_size||64)*.55))}px`,
+      textShadow:args.text_effect==='Glow' ? `0 0 12px ${cleanColor(args.text_color||'#ffffff')}` : '0 2px 7px #000',
+      fontWeight:'750'
+    });
+    const titleText = document.createElement('span'); titleText.textContent = title; titleEl.appendChild(titleText);
+    if (args.subtitle) {
+      const sub = addDraggable('subtitle', 'SUBJUDUL', 'subtitle-layer', {fontFamily:args.font||'DejaVu Sans',fontSize:'15px',opacity:String(args.text_opacity??1)});
+      const subText=document.createElement('span');subText.textContent=String(args.subtitle);sub.appendChild(subText);
+    }
+    if (args.visualizer !== 'none') {
+      const viz = addDraggable('visualizer', 'VISUALIZER', 'viz-layer', {
+        height:`${Math.max(48,Math.min(150,Number(args.visualizer_size||18)*5))}px`,
+        borderRadius:'9px'
+      });
+      if (args.visualizer === 'waveform') {
+        viz.innerHTML += `<svg viewBox="0 0 600 100" preserveAspectRatio="none" style="width:100%;height:100%;filter:drop-shadow(0 0 5px ${cleanColor(args.color_a)});"><path d="M0 50 Q30 5 60 50 T120 50 T180 50 T240 50 T300 50 T360 50 T420 50 T480 50 T540 50 T600 50" fill="none" stroke="${cleanColor(args.color_a)}" stroke-width="5"/></svg>`;
+      } else {
+        const bars=document.createElement('div');bars.style.cssText='width:100%;height:100%;display:flex;align-items:center;justify-content:center;gap:3px';
+        for(let i=0;i<36;i++){const bar=document.createElement('i');bar.className='bar';bar.style.height=`${18+((Math.sin(i*1.71)+1)*36)}%`;bar.style.setProperty('--a',cleanColor(args.color_a));bar.style.setProperty('--b',cleanColor(args.color_b));bar.style.setProperty('--dur',`${.35+(i%7)*.11}s`);bar.style.setProperty('--delay',`${(i%9)*-.13}s`);bars.appendChild(bar)}
+        viz.appendChild(bars);
+      }
+    }
+    hint.textContent = 'Geser judul, subjudul, atau visualizer langsung pada kanvas.';
+    setHeight();
+  }
+  window.addEventListener('message', event => {
+    if (!event.data || event.data.type !== 'streamlit:render') return;
+    render(event.data.args || {});
+  });
+  streamlitMessage('streamlit:componentReady', {apiVersion:1});
+  window.addEventListener('resize', setHeight);
+})();
+</script>
+</body>
+</html>
