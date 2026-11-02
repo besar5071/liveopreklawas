@@ -21,6 +21,10 @@ live_model = "gemma4:31b"
 api_keys = ["KIE_AI_API_KEY_1", "KIE_AI_API_KEY_2"]
 # Legacy api_key = "KIE_AI_API_KEY" tetap didukung untuk satu key
 
+[relay]
+api_key = "RELAY_FAST_API_KEY"
+model = "gpt-6-astra"
+
 [youtube_oauth]
 client_id = "GOOGLE_OAUTH_CLIENT_ID"
 client_secret = "GOOGLE_OAUTH_CLIENT_SECRET"
@@ -29,6 +33,16 @@ state_secret = "RANDOM_LONG_PRIVATE_VALUE"
 ```
 
 Di Google Cloud Console, aktifkan **YouTube Data API v3**, buat OAuth client yang sesuai dengan redirect URI di atas, dan izinkan akses YouTube. Setelah otorisasi, tempel URL redirect lengkap pada panel Shorts atau Live. Refresh token tersimpan di `data/youtube_accounts.json` dengan izin file terbatas; file runtime di dalam `data/` diabaikan Git. Pada Streamlit Cloud, filesystem bersifat sementara, sehingga koneksi channel dapat hilang saat instance diganti. Akses YouTube Live mencakup pembuatan broadcast dan stream, jadi channel yang pernah dihubungkan untuk Shorts perlu menyetujui scope Live yang lebih luas dengan login OAuth ulang.
+
+## Video dari teks (relay.fast)
+
+Tab **✍️ Video dari Teks** membuat video pendek langsung dari ide atau naskah. API key [relay.fast](https://relay.fast/) diisi di panel (hanya untuk sesi browser) atau di Secrets sebagai `[relay] api_key`; `[relay] model` menentukan model chat untuk menulis skenario dan default-nya `gpt-6-astra`. Tombol **Cek koneksi** memanggil `GET /v1/models` sehingga daftar model bisa dipilih langsung.
+
+Alur: tulis ide → **Buat draf dengan relay.fast** (atau **Pakai teks apa adanya** tanpa AI) → edit narasi, judul layar, subjudul, poin, dan warna aksen pada tabel → **Render video MP4**. relay.fast melewati endpoint OpenAI-compatible `/v1/chat/completions`; bila gagal, permintaan diulang ke endpoint cadangan `https://direct.relay-fast.com/v1`. Jawaban model wajib berupa JSON skenario; JSON yang dibungkus prosa atau blok markdown tetap diterima.
+
+Video dirakit di server aplikasi: latar dibuat dengan Pillow (gradient neon, geometris bold, atau editorial terang), narasi dibacakan `edge-tts` (gratis, tanpa API key, perlu koneksi internet server), subtitle ditempel dengan libass, musik latar diambil dari **Library → Audio**, lalu semua adegan digabung dan di-encode FFmpeg. Pilihan format 9:16, 1:1, dan 16:9 dengan resolusi cepat 720p atau tinggi 1080p. Skenario hasil render disimpan sebagai `data/plans/<nama file>.json` dan bisa diunduh dari panel hasil.
+
+Bila layanan suara tidak dapat dihubungi (mis. server tanpa akses keluar), video tetap dirender hening dan pesan penyebabnya ditulis pada status job — subtitle juga dilewati karena tidak ada audio untuk ditempeli. Tidak ada media yang dikirim ke relay.fast; hanya teks ide/naskah. Draf skenario memakai kredit relay.fast sesuai tarif akun, jadi periksa hasil sebelum merender atau mengunggah.
 
 ## Music Studio AI
 

@@ -18,6 +18,7 @@ import uploader
 import ytauth
 import ollama_cloud
 import music_studio as musicapi
+import relay_video as t2v
 import viz_editor
 
 st.set_page_config(page_title="Studio Render, Live & Musik", page_icon="📡", layout="wide")
@@ -144,8 +145,9 @@ with st.sidebar:
 
 st.title("Studio Render, Live & Musik")
 
-tab_lib, tab_imp, tab_shorts, tab_viz, tab_norm, tab_live, tab_music, tab_jobs = st.tabs(
-    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "🎛️ VIZ Editor", "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "🎼 Musik AI", "⚙️ Job"])
+tab_lib, tab_imp, tab_shorts, tab_text, tab_viz, tab_norm, tab_live, tab_music, tab_jobs = st.tabs(
+    ["📁 Library", "⬇️ Impor", "📱 Viral Shorts", "✍️ Video dari Teks", "🎛️ VIZ Editor",
+     "🧰 Normalisasi & Tes", "🔴 Live 24 Jam", "🎼 Musik AI", "⚙️ Job"])
 
 # ───────────── LIBRARY ─────────────
 with tab_lib:
@@ -650,6 +652,208 @@ with tab_shorts:
                     st.success(f"Ollama + upload diantrekan · Job `{job['id']}`")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Gagal mengantrekan Ollama + upload: {exc}")
+
+# ───────────── VIDEO DARI TEKS (relay.fast) ─────────────
+with tab_text:
+    relay_cfg = _secret_section("relay")
+    secret_relay_key = str(relay_cfg.get("api_key") or "").strip()
+    default_relay_model = str(relay_cfg.get("model") or t2v.RELAY_MODEL)
+    st.caption("Tulis ide atau naskah, lalu **relay.fast** (endpoint OpenAI-compatible) membuat draf skenario: "
+               "narasi, judul adegan, dan aksen warna. Studio merender video MP4-nya sendiri dengan gambar Pillow, "
+               "narasi TTS, subtitle, dan musik latar dari Library. Tidak ada media yang dikirim ke provider.")
+
+    key_col, model_col, conn_col = st.columns([1.4, 1, 0.7])
+    with key_col:
+        relay_key_input = st.text_input(
+            "API key relay.fast", type="password",
+            placeholder="sudah tersimpan di Secrets" if secret_relay_key else "sk-…",
+            help="Disimpan di sesi browser saja. Untuk permanen, isi [relay] api_key di Secrets.",
+            key="t2v_relay_key")
+        relay_key = relay_key_input.strip() or secret_relay_key
+        if secret_relay_key:
+            st.caption("API key dari Secrets dipakai bila kolom di atas kosong.")
+    with model_col:
+        relay_model = st.text_input("Model relay.fast", value=default_relay_model, key="t2v_model",
+                                    help="Model chat untuk menulis skenario (gaya OpenAI).")
+    with conn_col:
+        st.write("")
+        if st.button("🔌 Cek koneksi", key="t2v_ping", width="stretch"):
+            if not relay_key:
+                st.error("Isi API key relay.fast dulu.")
+            else:
+                try:
+                    models = t2v.list_models(relay_key)
+                    st.success(f"Terhubung · {len(models)} model tersedia.")
+                    if models:
+                        st.session_state["t2v_model_options"] = models
+                        st.caption("Model contoh: " + ", ".join(models[:8]))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Gagal terhubung: {exc}")
+    if st.session_state.get("t2v_model_options"):
+        picked_model = st.selectbox("Pilih dari model yang terdeteksi", ["(pakai kolom model)"] +
+                                    list(st.session_state["t2v_model_options"]), key="t2v_model_pick")
+        if picked_model != "(pakai kolom model)":
+            relay_model = picked_model
+
+    input_col, setting_col = st.columns([1.4, 1])
+    with input_col:
+        st.markdown("#### 1️⃣ Ide atau naskah")
+        t2v_topic = st.text_area(
+            "Tulis ide, poin-poin, atau naskah lengkap (boleh beberapa paragraf)",
+            height=190, key="t2v_topic",
+            placeholder="Contoh: 5 cara menyeduh kopi robusta ala barista rumahan, "
+                        "mulai dari suhu air sampai waktu seduh.")
+        t2v_tone = st.radio("Gaya penyampaian", list(t2v.TONES), horizontal=True, key="t2v_tone")
+        t2v_audience = st.text_input("Target audiens (opsional)", key="t2v_audience",
+                                     placeholder="contoh: pemula yang baru belajar menyeduh kopi")
+    with setting_col:
+        st.markdown("#### ⚙️ Pengaturan")
+        t2v_scene_count = st.slider("Jumlah adegan", 2, 10, 4, 1, key="t2v_scenes")
+        t2v_target = st.slider("Perkiraan durasi (detik)", 15, 180, 40, 5, key="t2v_target")
+        t2v_aspect = st.selectbox("Format", list(t2v.ASPECTS), key="t2v_aspect")
+        t2v_quality = st.selectbox("Resolusi", list(t2v.QUALITIES), index=0, key="t2v_quality")
+        t2v_style = st.selectbox("Gaya visual", list(t2v.STYLES), key="t2v_style")
+        t2v_voice = st.selectbox("Suara narasi", [code for code, _ in t2v.VOICES],
+                                 format_func=lambda c: dict(t2v.VOICES).get(c, c), key="t2v_voice")
+        t2v_narrate = st.checkbox("Buat narasi TTS", value=True, key="t2v_narrate",
+                                  help="Memakai edge-tts (gratis, perlu koneksi internet server).")
+        t2v_blank_scene = st.number_input("Detik per adegan bila tanpa narasi", 2, 20, 6, 1,
+                                          key="t2v_blank_scene")
+        t2v_subs = st.checkbox("Subtitle menempel di video", value=True, key="t2v_burn_subs",
+                               disabled=not t2v_narrate)
+        t2v_watermark = st.text_input("Teks watermark (opsional)", key="t2v_watermark",
+                                      placeholder="contoh: @channelkamu")
+        t2v_music_pool = svc.list_paths("audio")
+        t2v_music_choice = st.selectbox(
+            "Musik latar dari Library → Audio", [None] + t2v_music_pool,
+            format_func=lambda p: "Tanpa musik" if p is None else p.name, key="t2v_music")
+        t2v_music_volume = st.slider("Volume musik", 0, 100, 18, 1, key="t2v_music_volume",
+                                     disabled=t2v_music_choice is None) / 100
+
+    st.divider()
+    draft_col, plan_col = st.columns([1, 1.6])
+    plan_state_key = "t2v_plan"
+    with draft_col:
+        st.markdown("#### 2️⃣ Draf skenario")
+        if st.button("🧠 Buat draf dengan relay.fast", key="t2v_btn_plan", type="secondary",
+                     width="stretch", disabled=not t2v_topic.strip()):
+            if not relay_key:
+                st.error("API key relay.fast belum diisi.")
+            else:
+                with st.spinner("Meracik skenario…"):
+                    try:
+                        new_plan = t2v.draft_plan(
+                            relay_key, t2v_topic, model=relay_model, scenes=int(t2v_scene_count),
+                            duration=int(t2v_target), tone=t2v_tone, audience=t2v_audience.strip())
+                        st.session_state[plan_state_key] = new_plan
+                        st.session_state["t2v_plan_title"] = str(new_plan.get("title") or "")
+                        st.session_state["t2v_output_name"] = svc.safe_name(
+                            f"{str(new_plan.get('title') or 'video')[:60]}_T2V.mp4")
+                        st.success("Draf skenario siap. Periksa dan edit di kanan.")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Gagal membuat draf: {exc}")
+        if st.button("⚡ Pakai teks apa adanya (tanpa AI)", key="t2v_btn_fallback", width="stretch",
+                     disabled=not t2v_topic.strip()):
+            local_plan = t2v.fallback_plan(t2v_topic, scenes=int(t2v_scene_count))
+            st.session_state[plan_state_key] = local_plan
+            st.session_state["t2v_plan_title"] = str(local_plan.get("title") or "")
+            st.session_state["t2v_output_name"] = svc.safe_name(
+                f"{str(local_plan.get('title') or 'video')[:60]}_T2V.mp4")
+            st.info("Skenario dibuat lokal dari teks kamu, tanpa panggilan relay.fast.")
+        st.caption("Draf memakai kredit relay.fast sesuai tarif akun. Selalu cek hasil sebelum render.")
+
+    with plan_col:
+        st.markdown("#### 3️⃣ Edit lalu render")
+        plan = st.session_state.get(plan_state_key) or t2v.fallback_plan(
+            t2v_topic.strip() or "Tempel ide atau teks di sebelah kiri.", 2)
+        if "t2v_plan_title" not in st.session_state:
+            st.session_state["t2v_plan_title"] = str(plan.get("title") or "")
+        plan_title = st.text_input("Judul video", key="t2v_plan_title")
+        edited_scenes = st.data_editor(
+            pd.DataFrame([{
+                "Narasi": scene.get("narration", ""),
+                "Judul di layar": scene.get("headline", ""),
+                "Subjudul": scene.get("subheadline", ""),
+                "Poin (pisahkan |)": " | ".join(scene.get("bullets") or []),
+                "Aksen": scene.get("accent") or "",
+            } for scene in plan.get("scenes", [])]),
+            num_rows="dynamic", width="stretch", key="t2v_scene_editor",
+            column_config={
+                "Narasi": st.column_config.TextColumn(width="large"),
+                "Judul di layar": st.column_config.TextColumn(width="medium"),
+                "Subjudul": st.column_config.TextColumn(width="medium"),
+                "Poin (pisahkan |)": st.column_config.TextColumn(width="medium"),
+                "Aksen": st.column_config.TextColumn(width="small", help="Warna hex, contoh #22d3ee"),
+            })
+        edited_plan = {
+            "title": plan_title.strip() or "Video dari teks",
+            "scenes": [{
+                "narration": str(row.get("Narasi") or "").strip(),
+                "headline": str(row.get("Judul di layar") or "").strip(),
+                "subheadline": str(row.get("Subjudul") or "").strip(),
+                "bullets": [part.strip() for part in str(row.get("Poin (pisahkan |)") or "").split("|") if part.strip()],
+                "accent": str(row.get("Aksen") or "").strip(),
+            } for row in edited_scenes.to_dict("records")
+                if str(row.get("Narasi") or row.get("Judul di layar") or "").strip()],
+        }
+        edited_plan = t2v.normalize_plan(edited_plan)
+        total_preview = sum(
+            len(scene.get("narration", "").split()) / 2.6 + t2v.SCENE_PAD for scene in edited_plan["scenes"])
+        st.caption(f"{len(edited_plan['scenes'])} adegan · perkiraan {total_preview:.0f} detik narasi. "
+                   "Baris kosong diabaikan.")
+        if "t2v_output_name" not in st.session_state:
+            stem_source = (plan_title or (t2v_topic.strip().splitlines() or ["video"])[0])[:60] or "video"
+            st.session_state["t2v_output_name"] = svc.safe_name(f"{stem_source}_T2V.mp4")
+        out_name = st.text_input("Nama file hasil", key="t2v_output_name")
+        default_out_name = st.session_state["t2v_output_name"]
+        if st.button("⏺️ Render video MP4", type="primary", key="t2v_btn_render", width="stretch",
+                     disabled=not edited_plan["scenes"]):
+            try:
+                clean_name = svc.safe_name(out_name.strip() or default_out_name)
+                if Path(clean_name).suffix.lower() != ".mp4":
+                    clean_name = f"{Path(clean_name).stem}.mp4"
+                output_dir = svc.DIRS["output"]
+                stem, suffix = Path(clean_name).stem, Path(clean_name).suffix
+                reserved = {
+                    str(row.get("title", ""))[len("T2V · "):]
+                    for row in jobs.jobs if row.get("status") in {"antre", "berjalan"}
+                    and str(row.get("title", "")).startswith("T2V · ")
+                }
+                output_path = output_dir / clean_name
+                index = 1
+                while output_path.exists() or output_path.name in reserved:
+                    output_path = output_dir / f"{stem}_{index}{suffix}"
+                    index += 1
+                job = t2v.submit_text_video(
+                    jobs, edited_plan, output_path,
+                    aspect=t2v_aspect, quality=t2v_quality, style=t2v_style, voice=t2v_voice,
+                    narrate=bool(t2v_narrate), subtitles=bool(t2v_subs), music_path=t2v_music_choice,
+                    music_volume=float(t2v_music_volume), watermark=t2v_watermark.strip(),
+                    seconds_per_scene=float(t2v_blank_scene))
+                st.success(f"Render masuk antrean · Job `{job['id']}`. Hasil muncul di Library → Hasil.")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Tidak dapat mengantrekan render: {exc}")
+
+    @st.fragment(run_every=3)
+    def t2v_job_panel():
+        rows = [row for row in jobs.snapshot() if str(row.get("Job", "")).startswith("T2V · ")]
+        if rows:
+            st.markdown("#### 📋 Status render")
+            jobs_table(rows[:8])
+
+    t2v_job_panel()
+    recent_t2v = [p for p in reversed(svc.list_paths("output"))
+                  if p.suffix.lower() == ".mp4" and (t2v.PLAN_DIR / f"{p.stem}.json").is_file()][:6]
+    if recent_t2v:
+        with st.expander("🎞️ Hasil video dari teks terbaru", expanded=True):
+            picked_t2v = st.selectbox("Pilih hasil untuk diputar", recent_t2v,
+                                      format_func=lambda p: p.name, key="t2v_output_preview")
+            if picked_t2v and picked_t2v.stat().st_size < 400 * 1024 * 1024:
+                st.video(str(picked_t2v))
+            plan_file = t2v.PLAN_DIR / f"{Path(picked_t2v).stem}.json"
+            if plan_file.is_file():
+                st.download_button("⬇️ Unduh skenario (JSON)", plan_file.read_text("utf-8"),
+                                   file_name=plan_file.name, mime="application/json", key="t2v_dl_plan")
 
 # ───────────── VIZ EDITOR ─────────────
 with tab_viz:

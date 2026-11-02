@@ -6,3 +6,4 @@ deno
 requests
 numpy
 pillow
+edge-tts
