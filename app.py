@@ -1023,8 +1023,7 @@ def _reset_vol():
 
 with tab_live:
     st.caption("Satu proses live memakai satu encode untuk mengirim siaran ke maksimal lima channel YouTube secara bersamaan. "
-               "Pergantian video/lagu tidak memutus sesi. Alur video: opening opsional sekali di awal → video acak berulang. "
-               "Audio RANDOM diputar utuh terus-menerus secara acak, independen dari pergantian video.")
+               "Pergantian video/lagu tidak memutus sesi. Pilih audio tambahan dari Library atau gunakan audio asli yang tertanam di video.")
     vlib = svc.library_videos()
     alib = svc.list_paths("audio")
 
@@ -1040,33 +1039,45 @@ with tab_live:
                "Setelah opening selesai, video acak terus berjalan. Pilih lebih dari satu opening "
                "agar video awal dipilih acak. Video acak wajib diisi.")
 
-    st.markdown("#### 🎵 Audio random kontinu")
-    a_rand = st.multiselect(
-        "🎲 Pilih file audio untuk diputar acak terus-menerus",
-        alib,
-        format_func=svc.label,
-        key="l_arand",
-        placeholder="Pilih satu atau beberapa file audio...",
+    st.markdown("#### 🎵 Sumber audio Live")
+    audio_source_label = st.radio(
+        "Gunakan audio", ["Audio tambahan dari Library", "Audio asli bawaan video"],
+        horizontal=True, key="l_audio_source_mode", disabled=stream.running,
+        help="Audio tambahan: pilih playlist audio dari Library. Audio asli: suara dari tiap video ikut saat video itu diputar.",
     )
-    st.caption("Setiap file diputar sampai selesai. Jika memilih beberapa file, urutannya diacak tanpa lagu "
-               "yang sama berturut-turut; setelah semua file diputar, urutan diacak kembali. Satu file akan diputar ulang.")
+    audio_source = "video" if audio_source_label == "Audio asli bawaan video" else "library"
+    if audio_source == "library":
+        a_rand = st.multiselect(
+            "🎲 Pilih file audio tambahan untuk diputar acak terus-menerus", alib,
+            format_func=svc.label, key="l_arand", placeholder="Pilih satu atau beberapa file audio...",
+            disabled=stream.running,
+        )
+        st.caption("Setiap file audio tambahan diputar sampai selesai. Jika memilih beberapa file, urutannya diacak tanpa lagu "
+                   "yang sama berturut-turut; setelah semua file diputar, urutan diacak kembali.")
+    else:
+        a_rand = []
+        st.info("Suara diambil dari video opening/video acak yang sedang diputar. Video tanpa audio bawaan akan hening; file audio tambahan tidak digunakan.")
 
     st.markdown("##### 🎚️ Volume (bisa diubah saat live berjalan, langsung terdengar)")
     for _k, _v in VOL_DEFAULT.items():
         st.session_state.setdefault(_k, _v)
     h1, h2 = st.columns([3, 1.4])
-    vol_rand = h1.slider("Volume audio random", 0.0, 2.0, step=0.05, key="l_vrand", on_change=_push_vol)
+    volume_label = "Volume audio asli video" if audio_source == "video" else "Volume audio tambahan"
+    vol_rand = h1.slider(volume_label, 0.0, 2.0, step=0.05, key="l_vrand", on_change=_push_vol)
     h2.button("↩️ Default", key="l_vreset", on_click=_reset_vol, width="stretch",
-              help="Kembalikan volume audio random ke 1,00.")
+              help="Kembalikan volume audio Live ke 1,00.")
 
     all_v = list(dict.fromkeys([*active_opening, *v_rand]))
     all_a = list(dict.fromkeys(a_rand))
-    if all_v or all_a:
+    if all_v:
         rt = sum(_dur(str(p), p.stat().st_mtime) for p in v_rand)
-        rat = sum(_dur(str(p), p.stat().st_mtime) for p in a_rand)
         opening_label = f"Opening ({len(active_opening)}) → " if active_opening else ""
-        st.info(f"Alur: {opening_label}Video acak ({len(v_rand)} file · "
-                f"{_mmss(rt)} per putaran)   |   Audio random: {len(a_rand)} file · {_mmss(rat)}")
+        if audio_source == "video":
+            st.info(f"Alur: {opening_label}Video acak ({len(v_rand)} file · {_mmss(rt)} per putaran) · audio asli mengikuti video.")
+        else:
+            rat = sum(_dur(str(p), p.stat().st_mtime) for p in a_rand)
+            st.info(f"Alur: {opening_label}Video acak ({len(v_rand)} file · {_mmss(rt)} per putaran)   |   "
+                    f"Audio tambahan: {len(a_rand)} file · {_mmss(rat)}")
 
     live_oauth_cfg = _secret_section("youtube_oauth")
     live_oauth_cfg = {
@@ -1085,7 +1096,7 @@ with tab_live:
     st.session_state.setdefault("l_live_broadcast_title", "Live 24 Jam")
     st.session_state.setdefault("l_live_broadcast_description", "")
     with st.expander("✨ Buat judul + hashtag dan deskripsi otomatis (Ollama Cloud)"):
-        st.caption("Analisis memakai PCM 16 kHz, fitur spektral, estimasi tempo, gambar spektrogram, dan riset web; pilih hingga tiga audio live. Ini heuristik konten, bukan pengenal lagu/artis dan tidak menjamin penonton/viral.")
+        st.caption("Analisis memakai PCM 16 kHz, fitur spektral, estimasi tempo, gambar spektrogram, dan riset web. Pilih hingga tiga audio tambahan dari Library (fitur analisis tidak aktif saat memakai audio asli video). Ini heuristik konten, bukan pengenal lagu/artis dan tidak menjamin penonton/viral.")
         ollama_live_key = st.text_input("Ollama Cloud API key", type="password", key="l_live_ollama_key")
         ollama_live_model = st.text_input(
             "Model Ollama Cloud (harus mendukung vision)", key="l_live_ollama_model",
@@ -1103,7 +1114,7 @@ with tab_live:
             )
         else:
             analysis_audios = []
-            st.info("Pilih audio di bagian ‘Audio random kontinu’ untuk dianalisis.")
+            st.info("Untuk analisis metadata audio, pilih mode audio tambahan dan pilih file audio dari Library.")
         live_metadata_context = st.text_input(
             "Topik / nama program untuk riset web (opsional)", key="l_live_metadata_context",
             placeholder="Contoh: musik relaksasi, lagu rohani, suara alam",
@@ -1382,8 +1393,8 @@ with tab_live:
                  width="stretch"):
         if not v_rand:
             st.error("Pilih minimal 1 video acak. Opening bersifat opsional.")
-        elif not a_rand:
-            st.error("Pilih minimal satu file audio random.")
+        elif audio_source == "library" and not a_rand:
+            st.error("Pilih minimal satu file audio tambahan dari Library, atau ganti sumber ke audio asli bawaan video.")
         elif not selected_live_targets:
             st.error("Pilih minimal satu tujuan Live.")
         elif invalid_live_targets or not live_outputs:
@@ -1395,7 +1406,7 @@ with tab_live:
         else:
             stream.start({"videos": all_v, "audios": all_a,
                           "v_open": active_opening, "v_rand": v_rand,
-                          "a_loop": [], "a_rand": a_rand,
+                          "a_loop": [], "a_rand": a_rand, "audio_source": audio_source,
                           "vol_rand": vol_rand,
                           "outputs": live_outputs,
                           "rtmp_url": live_outputs[0]["rtmp_url"],
@@ -1424,7 +1435,7 @@ with tab_live:
         if stream.running:
             e, f2_, g = st.columns(3)
             e.metric("Video diputar", (stream.now_video or "-")[:28])
-            f2_.metric("Audio random", (stream.now_audio or "-")[:28])
+            f2_.metric("Audio asli video" if audio_source == "video" else "Audio tambahan", (stream.now_audio or "-")[:28])
             g.metric("Pergantian video", stream.switches)
             if stream.prep_info:
                 st.caption("🛠️ " + stream.prep_info)
