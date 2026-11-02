@@ -1,6 +1,7 @@
 """Kie.ai music-generation API helpers used by the Streamlit Music Studio."""
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import math
@@ -139,6 +140,64 @@ def create_task(api_key: str, body: dict) -> tuple[str, dict]:
         raise KieMusicError("Kie.ai tidak mengembalikan Task ID yang valid. Periksa akun sebelum mengirim ulang.",
                             uncertain=True)
     return task_id, payload
+
+
+def key_fingerprint(api_key: str) -> str:
+    """Stable, non-reversible short identifier; never store or display the raw credential."""
+    return hashlib.sha256(str(api_key or "").strip().encode("utf-8")).hexdigest()[:20]
+
+
+def is_credit_exhausted(error: KieMusicError) -> bool:
+    if error.status in {402, 455}:
+        return True
+    message = str(error).lower()
+    has_credit_term = any(word in message for word in ("credit", "credits", "balance", "quota"))
+    has_empty_term = any(word in message for word in ("insufficient", "not enough", "exhausted", "depleted", "empty", "low"))
+    return has_credit_term and has_empty_term
+
+
+def create_task_with_fallback(api_keys: list[str], body: dict,
+                              balances: dict[str, float | None] | None = None) -> tuple[str, dict, int, str, list[int]]:
+    """Try active Kie.ai keys in order; rotate only after explicit low-credit errors.
+
+    Keys with a known zero balance are skipped. Network/timeout/unknown errors are never
+    retried with another key, avoiding duplicate credit-bearing tasks on ambiguous submits.
+    Returns task id, provider response, 1-based key position, key fingerprint and skipped positions.
+    """
+    balances = balances or {}
+    candidates = []
+    skipped = []
+    seen = set()
+    for index, raw_key in enumerate(api_keys, start=1):
+        key = str(raw_key or "").strip()
+        fingerprint = key_fingerprint(key)
+        if not key or fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        try:
+            known_balance = float(balances[fingerprint]) if balances.get(fingerprint) is not None else None
+        except (TypeError, ValueError):
+            known_balance = None
+        if known_balance is not None and known_balance <= 0:
+            skipped.append(index)
+        else:
+            candidates.append((index, key, fingerprint))
+    if not candidates:
+        raise KieMusicError("Semua API key Kie.ai yang tersedia menunjukkan saldo credit 0. Perbarui saldo atau tambahkan key lain.", 402)
+    credit_errors = []
+    for index, key, fingerprint in candidates:
+        try:
+            task_id, payload = create_task(key, body)
+            return task_id, payload, index, fingerprint, skipped
+        except KieMusicError as exc:
+            if exc.uncertain or not is_credit_exhausted(exc):
+                raise
+            skipped.append(index)
+            credit_errors.append(exc)
+    raise KieMusicError(
+        "Credit habis pada semua API key yang dicoba. Tambahkan saldo/key lain lalu segarkan credit.",
+        credit_errors[-1].status if credit_errors else 402,
+    )
 
 
 def get_task(api_key: str, task_id: str) -> dict:

@@ -1263,20 +1263,49 @@ with tab_music:
                "Fitur ini mengikuti alur pada file referensi; bagian tilawah dari file tersebut tidak dimasukkan ke aplikasi.")
     kie_cfg = _secret_section("kie")
     ollama_cfg = _secret_section("ollama")
-    kie_secret = str(kie_cfg.get("api_key") or "").strip()
-    ollama_secret = str(ollama_cfg.get("api_key") or "").strip()
-    st.session_state.setdefault("music_kie_api_key", "")
+    raw_secret_keys = kie_cfg.get("api_keys", [])
+    if isinstance(raw_secret_keys, str):
+        secret_keys = [line.strip() for line in raw_secret_keys.splitlines() if line.strip()]
+    elif isinstance(raw_secret_keys, (list, tuple)):
+        secret_keys = [str(key).strip() for key in raw_secret_keys if str(key).strip()]
+    else:
+        secret_keys = []
+    legacy_secret_key = str(kie_cfg.get("api_key") or "").strip()
+    if legacy_secret_key:
+        secret_keys.append(legacy_secret_key)
+    secret_keys = list(dict.fromkeys(secret_keys))[:5]
+    legacy_session_key = str(st.session_state.get("music_kie_api_key", "")).strip()
+    default_key_slots = 1 if not secret_keys or legacy_session_key else 0
+    st.session_state.setdefault("music_kie_key_slots", default_key_slots)
+    max_session_slots = max(0, 5 - len(secret_keys))
+    music_kie_key_slots = min(max_session_slots, max(0, int(st.session_state.get("music_kie_key_slots", default_key_slots))))
+    if music_kie_key_slots < default_key_slots and not secret_keys:
+        music_kie_key_slots = default_key_slots
+    st.session_state["music_kie_key_slots"] = music_kie_key_slots
     st.session_state.setdefault("music_ollama_api_key", "")
     key_col, model_col = st.columns([1.3, 1])
     with key_col:
-        music_kie_key_input = st.text_input(
-            "Kie.ai API key", type="password", key="music_kie_api_key",
-            help="Kunci hanya dipakai dari server untuk permintaan Kie.ai dan tidak disimpan ke riwayat lagu.",
-        )
-        music_kie_key = music_kie_key_input.strip() or kie_secret
-        st.caption("Kunci dari Secrets `[kie] api_key` tersedia." if kie_secret and not music_kie_key_input.strip()
-                   else "Key sesi tidak persisten; simpan permanen di Secrets server bila diperlukan.")
+        if secret_keys:
+            st.caption(f"{len(secret_keys)} API key dari Secrets aktif. Key sesi tambahan dapat ditambahkan di bawah (maksimal 5 key total).")
+        add_key_col, key_hint_col = st.columns([1, 2])
+        if add_key_col.button("➕ Tambah API key", key="music_add_kie_key",
+                              disabled=music_kie_key_slots >= max_session_slots, width="stretch"):
+            music_kie_key_slots = min(max_session_slots, music_kie_key_slots + 1)
+            st.session_state["music_kie_key_slots"] = music_kie_key_slots
+            st.session_state.setdefault(f"music_kie_api_key_{music_kie_key_slots}", "")
+        key_hint_col.caption("Urutan key sesi mengikuti nomor slot; Secrets dipakai lebih dulu.")
+        session_kie_keys = []
+        for key_index in range(1, music_kie_key_slots + 1):
+            key_name = f"music_kie_api_key_{key_index}"
+            st.session_state.setdefault(key_name, legacy_session_key if key_index == 1 else "")
+            session_kie_keys.append(st.text_input(
+                f"Kie.ai API key sesi {key_index}", type="password", key=key_name,
+                help="Key sesi hanya tersimpan selama sesi Streamlit aktif, bukan di riwayat lagu.",
+            ).strip())
+        music_kie_keys = list(dict.fromkeys([*secret_keys, *(key for key in session_kie_keys if key)]))[:5]
+        st.caption(f"{len(music_kie_keys)} dari maksimal 5 key aktif. Saat saldo key aktif habis, pembuatan mencoba key berikutnya otomatis.")
     with model_col:
+        ollama_secret = str(ollama_cfg.get("api_key") or "").strip()
         music_ollama_key_input = st.text_input(
             "Ollama Cloud API key (opsional, untuk draf lirik)", type="password", key="music_ollama_api_key",
             help="Bisa juga dibaca dari Secrets `[ollama] api_key`.",
@@ -1285,20 +1314,23 @@ with tab_music:
         st.session_state.setdefault("music_ollama_model", str(ollama_cfg.get("model") or "gpt-oss:20b"))
         music_ollama_model = st.text_input("Model draf lagu", key="music_ollama_model")
 
-    def _refresh_kie_credit(api_key: str, force: bool = False) -> dict:
-        fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        cached = st.session_state.get("music_kie_credit_state", {})
-        if (not force and cached.get("key_fingerprint") == fingerprint
-                and time.time() - float(cached.get("checked_at", 0)) < 60):
-            return cached
-        try:
-            balance = musicapi.get_credit_balance(api_key)
-            cached = {"key_fingerprint": fingerprint, "balance": balance,
-                      "checked_at": time.time(), "error": ""}
-        except musicapi.KieMusicError as exc:
-            cached = {"key_fingerprint": fingerprint, "balance": None,
-                      "checked_at": time.time(), "error": str(exc)}
-        st.session_state["music_kie_credit_state"] = cached
+    def _refresh_kie_credit(api_keys: list[str], force: bool = False,
+                            only_fingerprints: set[str] | None = None) -> dict:
+        cached = dict(st.session_state.get("music_kie_credit_states", {}))
+        now = time.time()
+        for api_key in api_keys:
+            fingerprint = musicapi.key_fingerprint(api_key)
+            if only_fingerprints is not None and fingerprint not in only_fingerprints:
+                continue
+            previous = cached.get(fingerprint, {})
+            if not force and now - float(previous.get("checked_at", 0)) < 60:
+                continue
+            try:
+                cached[fingerprint] = {"balance": musicapi.get_credit_balance(api_key),
+                                       "checked_at": now, "error": ""}
+            except musicapi.KieMusicError as exc:
+                cached[fingerprint] = {"balance": None, "checked_at": now, "error": str(exc)}
+        st.session_state["music_kie_credit_states"] = cached
         return cached
 
     def _format_kie_credit(value: float) -> str:
@@ -1307,24 +1339,27 @@ with tab_music:
             return f"{int(number):,}".replace(",", ".")
         return f"{number:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-    refresh_credit_clicked = st.button("↻ Perbarui credit Kie.ai", key="music_refresh_kie_credit",
-                                       disabled=not music_kie_key)
-    if music_kie_key:
-        cached_credit = st.session_state.get("music_kie_credit_state", {})
-        current_fingerprint = hashlib.sha256(music_kie_key.encode("utf-8")).hexdigest()
-        if (refresh_credit_clicked or cached_credit.get("key_fingerprint") != current_fingerprint
-                or time.time() - float(cached_credit.get("checked_at", 0)) >= 60):
-            cached_credit = _refresh_kie_credit(music_kie_key, force=True)
-        if cached_credit.get("balance") is not None:
-            credit_value = _format_kie_credit(cached_credit["balance"])
-            credit_checked = time.strftime("%d-%m-%Y %H:%M:%S", time.localtime(cached_credit.get("checked_at", time.time())))
-            credit_left, credit_right = st.columns([1, 3])
-            credit_left.metric("Credit Kie.ai tersedia", credit_value)
-            credit_right.caption(f"Saldo aktif pada API key ini · terakhir diperbarui {credit_checked}. Setelah tugas dibuat/diselesaikan, saldo diperbarui kembali. Ini sisa credit provider, bukan perkiraan biaya tugas.")
-        elif cached_credit.get("error"):
-            st.warning(f"Saldo Kie.ai belum dapat dibaca: {cached_credit['error']}")
+    refresh_credit_clicked = st.button("↻ Perbarui total credit Kie.ai", key="music_refresh_kie_credit",
+                                       disabled=not music_kie_keys)
+    if music_kie_keys:
+        cached_credit = _refresh_kie_credit(music_kie_keys, force=refresh_credit_clicked)
+        credit_rows = [(index, musicapi.key_fingerprint(api_key),
+                        cached_credit.get(musicapi.key_fingerprint(api_key), {}))
+                       for index, api_key in enumerate(music_kie_keys, start=1)]
+        known_balances = [float(row[2]["balance"]) for row in credit_rows if row[2].get("balance") is not None]
+        total_credit = sum(known_balances)
+        checked_count = len(known_balances)
+        credit_left, credit_right = st.columns([1, 3])
+        credit_left.metric("Total credit tersedia", _format_kie_credit(total_credit) if checked_count else "Belum tersedia")
+        credit_right.caption(f"Saldo dari {checked_count}/{len(credit_rows)} key berhasil dibaca. Kredit otomatis diperbarui setelah tugas dikirim/selesai; total hanya menjumlahkan key yang berhasil diperiksa.")
+        with st.expander("Rincian credit per API key", expanded=False):
+            for key_index, _fingerprint, state in credit_rows:
+                if state.get("balance") is not None:
+                    st.write(f"API key {key_index}: **{_format_kie_credit(state['balance'])} credit**")
+                else:
+                    st.write(f"API key {key_index}: saldo belum terbaca · {state.get('error') or 'menunggu pemeriksaan'}")
     else:
-        st.info("Masukkan API key Kie.ai untuk melihat total credit tersedia.")
+        st.info("Tambahkan minimal satu API key Kie.ai untuk melihat total credit tersedia dan membuat musik.")
 
     with st.expander("✨ Buat draf judul, lirik, dan style dari ide lagu", expanded=False):
         with st.form("music_lyric_draft_form"):
@@ -1393,15 +1428,15 @@ with tab_music:
                                                        disabled=not use_weirdness, key="music_weirdness")
         st.warning("Setiap permintaan memakai kredit Kie.ai sesuai tarif akun dan tugas yang diterima tetap berjalan meski tab ditutup. Periksa title/lirik/style sebelum generate.")
         music_submit = st.form_submit_button("🎵 Generate Musik", type="primary",
-                                             disabled=not music_kie_key or st.session_state.get("music_create_uncertain", False) or active_music_count >= 5)
+                                             disabled=not music_kie_keys or st.session_state.get("music_create_uncertain", False) or active_music_count >= 5)
 
     if st.session_state.get("music_create_uncertain"):
         st.error("Status permintaan terakhir belum pasti. Periksa Task ID/akun Kie.ai sebelum mencoba lagi agar tidak terkena biaya ganda.")
         if st.button("Saya sudah memeriksa Kie.ai; izinkan permintaan baru", key="music_ack_uncertain"):
             st.session_state["music_create_uncertain"] = False
             st.rerun()
-    elif not music_kie_key:
-        st.info("Masukkan Kie.ai API key atau atur `[kie] api_key` di Secrets untuk mengaktifkan generator.")
+    elif not music_kie_keys:
+        st.info("Tambahkan API key Kie.ai sesi atau atur `[kie] api_key` / `[kie] api_keys` di Secrets untuk mengaktifkan generator.")
 
     if music_submit:
         request_input = {"custom_mode": True, "instrumental": instrumental, "model": music_model,
@@ -1426,26 +1461,39 @@ with tab_music:
             request_input["weirdness_constraint"] = float(music_weirdness)
         try:
             request_body = musicapi.validate_request({"model": "ai-music-api/generate", "input": request_input})
-            with st.spinner("Mengirim tugas ke Kie.ai..."):
-                task_id, _provider_response = musicapi.create_task(music_kie_key, request_body)
+            known_balances = st.session_state.get("music_kie_credit_states", {})
+            balance_map = {fingerprint: state.get("balance")
+                           for fingerprint, state in known_balances.items() if isinstance(state, dict)}
+            with st.spinner("Mengirim tugas ke Kie.ai; berpindah key jika credit key aktif habis..."):
+                task_id, _provider_response, used_key_index, used_key_fingerprint, skipped_key_indices = musicapi.create_task_with_fallback(
+                    music_kie_keys, request_body, balance_map,
+                )
             jobs_list = st.session_state.setdefault("music_studio_jobs", [])
             jobs_list[:] = [job for job in jobs_list if job.get("id") != task_id]
             jobs_list.insert(0, {"id": task_id, "title": music_title.strip(), "model": music_model,
                                  "instrumental": instrumental, "created_at": time.time(), "status": "waiting",
-                                 "message": "Tugas diterima Kie.ai. Menunggu proses musik.", "progress": None,
-                                 "tracks": [], "next_poll_at": 0, "poll_failures": 0})
+                                 "message": f"Tugas diterima melalui API key {used_key_index}. Menunggu proses musik.", "progress": None,
+                                 "tracks": [], "next_poll_at": 0, "poll_failures": 0,
+                                 "key_fingerprint": used_key_fingerprint, "key_index": used_key_index,
+                                 "credit_refreshed": False})
             if len(jobs_list) > 40:
                 active_jobs = [job for job in jobs_list if job.get("status") not in {"success", "failed"}]
                 finished_jobs = [job for job in jobs_list if job.get("status") in {"success", "failed"}]
                 jobs_list[:] = active_jobs + finished_jobs[:max(0, 40 - len(active_jobs))]
-            _refresh_kie_credit(music_kie_key, force=True)
-            st.session_state["music_task_notice"] = f"Tugas musik dibuat · Task ID {task_id}. Credit Kie.ai diperbarui."
+            _refresh_kie_credit(music_kie_keys, force=True)
+            switch_note = (f" Credit habis pada key: {', '.join(map(str, skipped_key_indices))}; beralih otomatis ke key {used_key_index}."
+                           if skipped_key_indices else f" Menggunakan API key {used_key_index}.")
+            st.session_state["music_task_notice"] = f"Tugas musik dibuat · Task ID {task_id}.{switch_note} Saldo credit diperbarui."
             st.rerun()
         except musicapi.KieMusicError as exc:
             if exc.uncertain:
                 st.session_state["music_create_uncertain"] = True
-                _refresh_kie_credit(music_kie_key, force=True)
+                _refresh_kie_credit(music_kie_keys, force=True)
                 st.session_state["music_task_error"] = f"Kie.ai: {exc} Status credit diperiksa kembali; jangan kirim ulang sebelum memeriksa Task ID."
+                st.rerun()
+            if musicapi.is_credit_exhausted(exc):
+                _refresh_kie_credit(music_kie_keys, force=True)
+                st.session_state["music_task_error"] = f"Kie.ai: {exc} Credit semua key diperbarui. Tambahkan key/saldo atau perbarui credit sebelum mencoba lagi."
                 st.rerun()
             st.error(f"Kie.ai: {exc}")
         except ValueError as exc:
@@ -1458,7 +1506,7 @@ with tab_music:
         if recover_clicked:
             if not musicapi.TASK_ID_RE.fullmatch(recovered_task_id.strip()):
                 st.error("Task ID tidak valid.")
-            elif not music_kie_key:
+            elif not music_kie_keys:
                 st.error("Masukkan API key Kie.ai yang sama dengan key pemilik tugas.")
             else:
                 jobs_list = st.session_state.setdefault("music_studio_jobs", [])
@@ -1483,18 +1531,39 @@ with tab_music:
                         match[field] = track[field]
         return merged[:20]
 
-    def _poll_music_job(job: dict, api_key: str, force: bool = False) -> None:
+    def _poll_music_job(job: dict, api_keys: list[str], force: bool = False) -> None:
         now = time.time()
         previous_status = job.get("status")
         if not force and now < float(job.get("next_poll_at", 0)):
             return
-        if not api_key:
-            job.update(status="paused", message="Masukkan kembali API key Kie.ai yang sama untuk memeriksa tugas.")
+        if not api_keys:
+            job.update(status="paused", message="Masukkan API key Kie.ai yang sama untuk memeriksa tugas.")
+            return
+        stored_fingerprint = job.get("key_fingerprint")
+        candidates = [(index, key) for index, key in enumerate(api_keys, start=1)
+                      if not stored_fingerprint or musicapi.key_fingerprint(key) == stored_fingerprint]
+        if not candidates:
+            job.update(status="paused", message="API key pembuat tugas ini tidak tersedia pada sesi. Tambahkan kembali key yang sama untuk melanjutkan pemeriksaan.")
             return
         job["next_poll_at"] = now + 12
+        used_api_key = ""
         try:
-            payload = musicapi.get_task(api_key, job["id"])
-            result = musicapi.normalize_task(payload, api_key)
+            payload = None
+            last_key_error = None
+            for key_index, candidate_key in candidates:
+                try:
+                    payload = musicapi.get_task(candidate_key, job["id"])
+                    used_api_key = candidate_key
+                    job["key_fingerprint"] = musicapi.key_fingerprint(candidate_key)
+                    job["key_index"] = key_index
+                    break
+                except musicapi.KieMusicError as exc:
+                    if stored_fingerprint or exc.status not in {401, 403, 404, 410, 422}:
+                        raise
+                    last_key_error = exc
+            if payload is None:
+                raise last_key_error or musicapi.KieMusicError("Tidak ada API key yang dapat memeriksa Task ID ini.", 422)
+            result = musicapi.normalize_task(payload, used_api_key)
             job["tracks"] = _merge_music_tracks(job.get("tracks", []), result["tracks"])
             job["status"] = result["status"]
             job["message"] = result["message"]
@@ -1516,7 +1585,8 @@ with tab_music:
         if (job.get("status") in {"success", "failed"}
                 and previous_status not in {"success", "failed"}
                 and not job.get("credit_refreshed")):
-            _refresh_kie_credit(api_key, force=True)
+            if used_api_key:
+                _refresh_kie_credit([used_api_key], force=True)
             job["credit_refreshed"] = True
             st.rerun(scope="app")
 
@@ -1529,7 +1599,7 @@ with tab_music:
         st.caption("Task ID dan tautan hasil hanya tersimpan di sesi browser Streamlit ini. Unduh hasil yang disukai; URL provider dapat kedaluwarsa.")
         for index, job in enumerate(list(jobs_list)):
             if job.get("status") in {"waiting", "generating"}:
-                _poll_music_job(job, music_kie_key)
+                _poll_music_job(job, music_kie_keys)
             with st.container(border=True):
                 head = st.columns([3, 1])
                 head[0].markdown(f"**{job.get('title') or 'Musik'}** · `{job.get('model') or 'Kie.ai'}`")
@@ -1539,7 +1609,7 @@ with tab_music:
                 if job.get("progress") is not None:
                     st.progress(min(100, max(0, int(job["progress"]))) / 100)
                 if st.button("🔄 Cek status", key=f"music_check_{index}_{job.get('id')}"):
-                    _poll_music_job(job, music_kie_key, force=True)
+                    _poll_music_job(job, music_kie_keys, force=True)
                 if job.get("tracks"):
                     for track_index, track in enumerate(job["tracks"]):
                         with st.expander(f"▶️ {track.get('title') or f'Variasi {track_index + 1}'}"):
