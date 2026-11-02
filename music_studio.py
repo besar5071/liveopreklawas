@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import requests
 
 
 API_BASE = "https://api.kie.ai/api/v1/jobs"
+CREDIT_URL = "https://api.kie.ai/api/v1/chat/credit"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9._-]{3,150}$")
 
 
@@ -87,6 +89,45 @@ def _api_request(api_key: str, method: str, path: str, *, body: dict | None = No
             message = f"Kie.ai menolak permintaan (HTTP {status})."
         raise KieMusicError(message, status, create and (status == 408 or status >= 500))
     return payload
+
+
+def get_credit_balance(api_key: str) -> float:
+    """Return current available Kie.ai credit as reported by its credit endpoint."""
+    key = str(api_key or "").strip()
+    if not key:
+        raise KieMusicError("API key Kie.ai belum diisi.")
+    try:
+        response = requests.get(CREDIT_URL, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"}, timeout=20)
+    except requests.RequestException as exc:
+        raise KieMusicError("Tidak dapat memeriksa saldo kredit Kie.ai. Coba segarkan lagi.") from exc
+    try:
+        payload = response.json()
+    except (ValueError, requests.RequestException) as exc:
+        raise KieMusicError("Respons saldo Kie.ai tidak dapat dibaca.", response.status_code) from exc
+    if not isinstance(payload, dict):
+        raise KieMusicError("Format saldo Kie.ai tidak dikenali.", response.status_code)
+    try:
+        code = int(payload.get("code", 200))
+    except (TypeError, ValueError):
+        code = response.status_code
+    if not response.ok or code not in {0, 200}:
+        status = code if code not in {0, 200} else response.status_code
+        if status in {401, 403}:
+            raise KieMusicError("API key Kie.ai tidak valid atau tidak memiliki akses untuk melihat saldo.", status)
+        raise KieMusicError(f"Kie.ai gagal mengembalikan saldo kredit (HTTP {status}).", status)
+    value = payload.get("data")
+    if isinstance(value, dict):
+        value = next((value.get(name) for name in ("credits", "credit", "balance", "remaining", "available")
+                      if value.get(name) is not None), None)
+    if isinstance(value, bool) or value is None:
+        raise KieMusicError("Kie.ai tidak mengembalikan angka saldo kredit.")
+    try:
+        balance = float(value)
+    except (TypeError, ValueError) as exc:
+        raise KieMusicError("Format saldo kredit Kie.ai bukan angka.") from exc
+    if not math.isfinite(balance) or balance < 0:
+        raise KieMusicError("Nilai saldo kredit dari Kie.ai tidak valid.")
+    return balance
 
 
 def create_task(api_key: str, body: dict) -> tuple[str, dict]:
