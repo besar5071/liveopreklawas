@@ -963,6 +963,21 @@ def _rotate_by_time(files, durs, offset: float):
     return list(files), list(durs)
 
 
+def _live_audio_source(cfg: dict) -> str:
+    """Normalize current and legacy UI values for Live's audio-source setting."""
+    raw = cfg.get("audio_source")
+    value = str(raw or "").strip().lower()
+    if value in {"video", "original", "embedded", "video_original", "audio asli bawaan video"}:
+        return "video"
+    if value == "library":
+        return "library"
+    # Older UI builds may submit an empty audio selection without the new mode field.
+    # Since Library mode requires an explicit audio pick, treat that legacy shape as video audio.
+    if not value and not any(cfg.get(key) for key in ("a_loop", "a_rand", "audios")):
+        return "video"
+    return "library"
+
+
 TS_PKT = 188
 PCM_RATE, PCM_CH = 44100, 2
 PCM_SEC = PCM_RATE * PCM_CH * 2            # byte per detik PCM s16le (176400)
@@ -1755,7 +1770,7 @@ class StreamManager:
     # ---------- loop utama ----------
     def _run(self, cfg: dict):
         videos = [Path(p) for p in cfg["videos"]]
-        audio_source = "video" if cfg.get("audio_source") == "video" else "library"
+        audio_source = _live_audio_source(cfg)
         cfg["audio_source"] = audio_source
         requested_loop = [] if audio_source == "video" else [Path(p) for p in (cfg.get("a_loop") or [])][:1]
         requested_random = [] if audio_source == "video" else [Path(p) for p in (cfg.get("a_rand") or [])]

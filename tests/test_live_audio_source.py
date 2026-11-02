@@ -24,6 +24,12 @@ class FakeProcess:
 
 
 class LiveAudioSourceTests(unittest.TestCase):
+    def test_audio_source_accepts_current_and_legacy_original_video_selections(self):
+        self.assertEqual(services._live_audio_source({"audio_source": "video"}), "video")
+        self.assertEqual(services._live_audio_source({"audio_source": "Audio asli bawaan video"}), "video")
+        self.assertEqual(services._live_audio_source({"a_rand": [], "a_loop": []}), "video")
+        self.assertEqual(services._live_audio_source({"audio_source": "library", "a_rand": []}), "library")
+
     def test_original_audio_mode_rejects_a_random_video_playlist_without_audio(self):
         manager = services.StreamManager()
         path = Path("silent-video.mp4")
